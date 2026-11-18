@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import getpass
+import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
 
+from scripts.build_pyz import FIXED_ZIP_TIMESTAMP, build_zipapp
 from scripts.check_cleanroom import scan_cleanroom
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +97,91 @@ class TestCleanroomScanner(unittest.TestCase):
     def test_actual_mipmem_repo_is_clean(self) -> None:
         violations = scan_cleanroom(REPO_ROOT)
         self.assertEqual(violations, [])
+
+
+class TestPyzBundleAndLatency(unittest.TestCase):
+    """Verify deterministic .pyz packaging, bytecode exclusion, and <25ms cold-start."""
+
+    def test_build_zipapp_is_deterministic_and_excludes_bytecode(self) -> None:
+        src_dir = REPO_ROOT / "src"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            first_pyz = build_zipapp(src_dir=src_dir, output_path=base / "a" / "mipmem.pyz")
+            second_pyz = build_zipapp(src_dir=src_dir, output_path=base / "b" / "mipmem.pyz")
+
+            self.assertEqual(first_pyz.read_bytes(), second_pyz.read_bytes())
+            with zipfile.ZipFile(first_pyz, "r") as zf:
+                self.assertIsNone(zf.testzip())
+                names = [info.filename for info in zf.infolist()]
+                self.assertIn("__main__.py", names)
+                self.assertIn("mipmem/cli.py", names)
+                for info in zf.infolist():
+                    self.assertNotIn("__pycache__", info.filename)
+                    self.assertFalse(info.filename.endswith((".pyc", ".pyo")))
+                    self.assertEqual(info.date_time, FIXED_ZIP_TIMESTAMP)
+
+    def test_built_pyz_cold_start_under_25ms_in_isolated_sandbox(self) -> None:
+        repo_pyz = REPO_ROOT / "bin" / "mipmem.pyz"
+        self.assertTrue(repo_pyz.is_file(), f"Missing built zipapp at {repo_pyz}")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            tmp_pyz = base / "mipmem.pyz"
+            shutil.copy2(repo_pyz, tmp_pyz)
+            isolated_home = base / "home"
+            isolated_home.mkdir()
+            isolated_vault = base / "vault"
+
+            clean_env = {
+                key: val
+                for key, val in os.environ.items()
+                if key
+                not in (
+                    "PYTHONPATH",
+                    "MIPMEM_CONFIG_DIR",
+                    "MIPMEM_VAULT_DIR",
+                    "MIPMEM_CACHE_DIR",
+                    "XDG_CONFIG_HOME",
+                    "XDG_DATA_HOME",
+                    "XDG_CACHE_HOME",
+                )
+            }
+            clean_env["HOME"] = str(isolated_home)
+            clean_env["MIPMEM_CONFIG_DIR"] = str(base / "cfg")
+            clean_env["MIPMEM_VAULT_DIR"] = str(isolated_vault)
+            clean_env["MIPMEM_CACHE_DIR"] = str(base / "cache")
+
+            # Warm OS page cache once before measuring 10 consecutive cold invocations.
+            warm = subprocess.run(
+                [sys.executable, str(tmp_pyz), "health", "--json"],
+                cwd=str(base),
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(warm.returncode, 0, msg=warm.stderr + warm.stdout)
+
+            latencies_ms: list[float] = []
+            for _ in range(10):
+                proc = subprocess.run(
+                    [sys.executable, str(tmp_pyz), "health", "--json"],
+                    cwd=str(base),
+                    env=clean_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, msg=proc.stderr + proc.stdout)
+                self.assertEqual(proc.stderr, "")
+                payload = json.loads(proc.stdout)
+                self.assertTrue(payload["success"])
+                self.assertFalse(payload["vault_initialized"])
+                self.assertEqual(payload["vault_dir"], str(isolated_vault))
+                latencies_ms.append(float(payload["cold_start_ms"]))
+
+            avg_ms = sum(latencies_ms) / len(latencies_ms)
+            self.assertLess(avg_ms, 25.0, msg=f"Average cold_start_ms={avg_ms:.2f}ms >= 25.0ms")
 
 
 if __name__ == "__main__":
