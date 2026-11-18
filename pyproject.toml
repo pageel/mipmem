@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mipmem"
+version = "0.1.0"
+description = "Zero-Token, Zero-Dependency 4-Layer Mipmapped Cognitive Memory Engine for AI Agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Pageel Contributors" }]
+dependencies = []
+
+[project.scripts]
+mipmem = "mipmem.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

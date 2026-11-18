@@ -1,0 +1,22 @@
+[core]
+host_id = "workstation-alpha"
+vault_path = "~/.local/share/mipmem/vault"
+locale = "en" # "en" | "vi"
+
+[sync]
+backend = "none" # "git" | "folder" | "none"
+vault_remote_url = "[TBD]" # e.g. git@github.com:example-user/my-mipmem-vault.git
+auto_sync_on_stop = true
+
+[budget]
+l0_max_tokens = 300
+l1_max_tokens = 450
+topic_shift_novelty = 0.70
+
+[workspace_policies]
+# "active": inject L0/L1 + /mem + Stop harvest (default)
+# "passive": NO auto L0/L1 injection (preserves custom startup workflows), STILL runs Stop harvest + /mem + Lazy MCP
+# "disabled": completely ignore workspace
+default = "active"
+passive_paths = [] # e.g. ["/path/to/custom-workflow-workspace"]
+disabled_paths = [] # e.g. ["/path/to/confidential-repo"]
