@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.installed.cfg
+*.egg
+dist/
+build/
+.venv/
+venv/
+env/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.pytype/
+
+# SQLite & Local Caches
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.cache/
+
+# Testing & Output
+.test-output
+output/
+artifacts/tests/
+coverage/
+.coverage
+htmlcov/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+*.local
+*.pem
+*.key
+id_rsa*
+credentials.json
+
+# Node / Pyright Tooling
+node_modules/
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
