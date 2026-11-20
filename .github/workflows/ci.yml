@@ -25,13 +25,13 @@ jobs:
     name: Static Lint, Typecheck & Clean-Room
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -57,15 +57,25 @@ jobs:
 
   test-matrix:
     name: Zero-Dep Test Suite (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          - python-version: "3.9"
+            os: ubuntu-24.04
+          - python-version: "3.10"
+            os: ubuntu-latest
+          - python-version: "3.11"
+            os: ubuntu-latest
+          - python-version: "3.12"
+            os: ubuntu-latest
+          - python-version: "3.13"
+            os: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -78,16 +88,21 @@ jobs:
     name: Deterministic .pyz Bundle Verification
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Rebuild zipapp and verify byte-for-byte determinism
         run: |
+          BEFORE_SHA=$(sha256sum bin/mipmem.pyz | awk '{print $1}')
           python3 scripts/build_pyz.py
-          git diff --exit-code bin/mipmem.pyz
+          AFTER_SHA=$(sha256sum bin/mipmem.pyz | awk '{print $1}')
+          echo "BEFORE_SHA=$BEFORE_SHA"
+          echo "AFTER_SHA=$AFTER_SHA"
+          test "$BEFORE_SHA" = "$AFTER_SHA"
+          git -c core.filemode=false diff --exit-code bin/mipmem.pyz
 
       - name: Verify zipapp integrity and isolated /tmp smoke test
         run: |
@@ -116,9 +131,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.run_macos == true
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
