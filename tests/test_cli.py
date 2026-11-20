@@ -16,9 +16,12 @@ from unittest import mock
 from mipmem.cli import main as cli_main
 from mipmem.config import load_config
 from mipmem.core.diagnostics import (
+    BRAINSTORM_NOT_FOUND,
     CLI_INVALID_ARGUMENT,
     CONFIG_INVALID_HOST_ID,
     CONFIG_INVALID_TOML,
+    INVALID_BRAINSTORM_STATUS,
+    INVALID_SLICE_SELECTOR,
     MIGRATE_SOURCE_MISSING,
     VAULT_NOT_INITIALIZED,
     VAULT_PATH_TRAVERSAL,
@@ -56,10 +59,14 @@ class TestCliDispatcher(unittest.TestCase):
             probe_code = (
                 "import sys; "
                 "import mipmem.cli as cli; "
+                "assert 'sqlite3' not in sys.modules; "
+                "assert 'mipmem.core.fts_recall' not in sys.modules; "
                 "assert 'mipmem.core.redactor' not in sys.modules; "
                 "assert 'mipmem.core.migrate_v2' not in sys.modules; "
                 "rc = cli.main(['health', '--json']); "
                 "assert rc == 0; "
+                "assert 'sqlite3' not in sys.modules; "
+                "assert 'mipmem.core.fts_recall' not in sys.modules; "
                 "assert 'mipmem.core.redactor' not in sys.modules; "
                 "assert 'mipmem.core.migrate_v2' not in sys.modules"
             )
@@ -272,6 +279,125 @@ class TestCliDispatcher(unittest.TestCase):
                 )
                 self.assertNotEqual(rc, 0)
                 self.assertEqual(json.loads(out)["error"]["code"], VAULT_PATH_TRAVERSAL)
+
+    def test_s2_memory_cli_index_recall_bs_health_deep_and_error_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            cfg_dir = base / "cfg"
+            vault_dir = base / "vault"
+            cache_dir = base / "cache"
+            env_map = {
+                "MIPMEM_CONFIG_DIR": str(cfg_dir),
+                "MIPMEM_VAULT_DIR": str(vault_dir),
+                "MIPMEM_CACHE_DIR": str(cache_dir),
+            }
+
+            rc, out, err = _run_cli(["init", "--host", "host-alpha", "--json"], env_map)
+            self.assertEqual(rc, 0, msg=out + err)
+
+            note_file = base / "strategy.md"
+            note_file.write_text(
+                "# Chiến lược bộ nhớ đa máy\n\n"
+                "Tài liệu thiết kế đồng bộ định tuyến.\n\n"
+                "## Mục Một\n"
+                "Nội dung mục một về bộ nhớ đa máy.\n\n"
+                "## Mục Hai\n"
+                "Chi tiết đồng bộ không xung đột.\n",
+                encoding="utf-8",
+            )
+
+            # bs save from --file
+            rc, out, err = _run_cli(
+                [
+                    "bs",
+                    "save",
+                    "Chiến lược bộ nhớ đa máy",
+                    "--file",
+                    str(note_file),
+                    "--json",
+                ],
+                env_map,
+            )
+            self.assertEqual(rc, 0, msg=out + err)
+            self.assertEqual(err, "")
+            saved = json.loads(out)
+            self.assertTrue(saved["success"])
+            bs_id = saved["brainstorm"]["bs_id"]
+
+            # index --json
+            rc, out, err = _run_cli(["index", "--json"], env_map)
+            self.assertEqual(rc, 0, msg=out + err)
+            idx_data = json.loads(out)
+            self.assertTrue(idx_data["success"])
+            self.assertEqual(idx_data["report"]["indexed_brainstorms"], 1)
+
+            # recall unaccented Vietnamese đ/Đ query
+            rc, out, err = _run_cli(
+                ["recall", "dong bo da may", "--locale", "vi", "--limit", "5", "--json"],
+                env_map,
+            )
+            self.assertEqual(rc, 0, msg=out + err)
+            rec_data = json.loads(out)
+            self.assertTrue(rec_data["success"])
+            self.assertGreaterEqual(len(rec_data["result"]["hits"]), 1)
+            self.assertIn("đa máy", rec_data["result"]["hits"][0]["title"])
+
+            # bs view --slice §1 skips H1 document title
+            rc, out, err = _run_cli(
+                ["bs", "view", bs_id, "--slice", "§1", "--json"],
+                env_map,
+            )
+            self.assertEqual(rc, 0, msg=out + err)
+            slice_data = json.loads(out)
+            self.assertEqual(slice_data["slice"]["layer"], "L2")
+            self.assertIn("## Mục Một", slice_data["slice"]["content"])
+            self.assertNotIn("# Chiến lược", slice_data["slice"]["content"])
+
+            # bs status cross-host CRDT mutation + bs list --status shipped
+            rc, out, err = _run_cli(
+                ["bs", "status", bs_id, "shipped", "--host", "host-beta", "--json"],
+                env_map,
+            )
+            self.assertEqual(rc, 0, msg=out + err)
+            self.assertTrue(json.loads(out)["success"])
+
+            rc, out, err = _run_cli(["bs", "list", "--status", "shipped", "--json"], env_map)
+            self.assertEqual(rc, 0, msg=out + err)
+            listed = json.loads(out)
+            self.assertEqual(len(listed["brainstorms"]), 1)
+            self.assertEqual(listed["brainstorms"][0]["bs_id"], bs_id)
+            self.assertEqual(listed["brainstorms"][0]["effective_status"], "shipped")
+
+            # health --deep --json
+            rc, out, err = _run_cli(["health", "--deep", "--json"], env_map)
+            self.assertEqual(rc, 0, msg=out + err)
+            deep = json.loads(out)
+            self.assertTrue(deep["success"])
+            self.assertTrue(deep["fts5_supported"])
+            self.assertIn("unicode61", deep["fts5_tokenizer"])
+            self.assertIsInstance(deep["fts5_query_ms"], (int, float))
+            self.assertEqual(deep["indexed_brainstorms"], 1)
+            self.assertEqual(deep["indexed_sessions"], 0)
+
+            # Spec S2 CLI error envelopes
+            rc, out, err = _run_cli(["bs", "view", "missing-bs-id", "--json"], env_map)
+            self.assertNotEqual(rc, 0)
+            self.assertEqual(err, "")
+            self.assertEqual(json.loads(out)["error"]["code"], BRAINSTORM_NOT_FOUND)
+
+            rc, out, err = _run_cli(
+                ["bs", "view", bs_id, "--slice", "§99", "--json"],
+                env_map,
+            )
+            self.assertNotEqual(rc, 0)
+            self.assertEqual(json.loads(out)["error"]["code"], INVALID_SLICE_SELECTOR)
+
+            rc, out, err = _run_cli(
+                ["bs", "status", bs_id, "invalid-status", "--json"],
+                env_map,
+            )
+            self.assertNotEqual(rc, 0)
+            self.assertEqual(json.loads(out)["error"]["code"], INVALID_BRAINSTORM_STATUS)
 
 
 if __name__ == "__main__":

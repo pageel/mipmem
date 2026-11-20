@@ -274,12 +274,49 @@ def _handle_health_full(
         "config_exists": paths.config_file.is_file(),
         "cold_start_ms": cold_start_ms,
     }
+
+    if bool(getattr(args, "deep", False)):
+        from mipmem.core.fts_recall import (
+            FTS_DB_REL_PATH,
+            probe_fts5_capabilities,
+            recall_memory,
+            sync_fts_index,
+        )
+
+        fts_ok, fts_tok = probe_fts5_capabilities()
+        indexed_sessions = 0
+        indexed_brainstorms = 0
+        fts_query_ms = 0.0
+        if fts_ok and vault_initialized:
+            db_file = Path(paths.vault_dir) / FTS_DB_REL_PATH
+            sync_rep = sync_fts_index(paths.vault_dir)
+            indexed_sessions = sync_rep.indexed_sessions
+            indexed_brainstorms = sync_rep.indexed_brainstorms
+            fts_tok = sync_rep.tokenizer_mode
+            if db_file.is_file():
+                probe_res = recall_memory(paths.vault_dir, "mipmem probe", limit=1)
+                fts_query_ms = probe_res.duration_ms
+        payload["fts5_supported"] = fts_ok
+        payload["fts5_tokenizer"] = fts_tok
+        payload["fts5_query_ms"] = fts_query_ms
+        payload["indexed_sessions"] = indexed_sessions
+        payload["indexed_brainstorms"] = indexed_brainstorms
+
     if json_mode:
         _emit_json(payload)
     else:
         status = "initialized" if vault_initialized else "uninitialized"
+        extra = ""
+        if bool(getattr(args, "deep", False)):
+            extra = (
+                f" | fts5={payload['fts5_supported']} ({payload['fts5_tokenizer']}) "
+                f"| sessions={payload['indexed_sessions']} "
+                f"| brainstorms={payload['indexed_brainstorms']} "
+                f"| fts_ms={payload['fts5_query_ms']:.2f}ms"
+            )
         sys.stdout.write(
-            f"mipmem {__version__} | vault={status} ({paths.vault_dir}) | {cold_start_ms:.2f}ms\n"
+            f"mipmem {__version__} | vault={status} ({paths.vault_dir}) "
+            f"| {cold_start_ms:.2f}ms{extra}\n"
         )
     return 0
 
@@ -307,6 +344,316 @@ def _handle_migrate(args: argparse.Namespace, json_mode: bool) -> int:
             f"skipped={report.skipped_existing} conflicts={report.conflicts_skipped}\n"
         )
     return 0
+
+
+def _resolve_host_and_locale(
+    paths: Any,
+    explicit_host: str | None,
+    explicit_locale: str | None,
+) -> tuple[str, str]:
+    """Resolve active host_id and locale from CLI flags, config.toml, or defaults."""
+    from mipmem.config import load_config
+    from mipmem.core.vault import default_host_id
+
+    cfg: dict[str, Any] = load_config(paths.config_file) if paths.config_file.is_file() else {}
+    core_tbl = cfg.get("core", {}) if isinstance(cfg, dict) else {}
+
+    host_id = explicit_host
+    if not host_id and isinstance(core_tbl, dict):
+        cfg_host = core_tbl.get("host_id")
+        if isinstance(cfg_host, str) and cfg_host.strip():
+            host_id = cfg_host.strip()
+    if not host_id:
+        host_id = default_host_id()
+
+    locale = explicit_locale
+    if not locale and isinstance(core_tbl, dict):
+        cfg_locale = core_tbl.get("locale")
+        if isinstance(cfg_locale, str) and cfg_locale.strip():
+            locale = cfg_locale.strip()
+    if not locale:
+        locale = "en"
+
+    return host_id, locale
+
+
+def _require_initialized_vault(vault_dir: Path) -> None:
+    """Raise VAULT_NOT_INITIALIZED if vault_dir lacks a valid vault_manifest.json."""
+    from mipmem.core.diagnostics import VAULT_NOT_INITIALIZED, MipmemError
+    from mipmem.core.vault import is_vault_initialized
+
+    if not is_vault_initialized(vault_dir):
+        raise MipmemError(
+            VAULT_NOT_INITIALIZED,
+            f"Vault not initialized at {vault_dir}. Run 'mipmem init --host <name>'.",
+        )
+
+
+def _handle_index(args: argparse.Namespace, json_mode: bool) -> int:
+    """Incrementally sync or rebuild .cache/global_fts.db from the Sharded Vault."""
+    from mipmem.core.fts_recall import sync_fts_index
+
+    paths = _resolve_active_paths(getattr(args, "vault", None))
+    _require_initialized_vault(paths.vault_dir)
+    _, locale = _resolve_host_and_locale(paths, None, getattr(args, "locale", None))
+    report = sync_fts_index(
+        paths.vault_dir,
+        locale=locale,
+        rebuild=bool(getattr(args, "rebuild", False)),
+    )
+    if json_mode:
+        _emit_json({"success": True, "report": report.to_dict()})
+    else:
+        sys.stdout.write(
+            f"Indexed {report.files_indexed}/{report.files_scanned} file(s) "
+            f"(removed={report.files_removed}, sessions={report.indexed_sessions}, "
+            f"brainstorms={report.indexed_brainstorms}, {report.duration_ms:.2f}ms)\n"
+        )
+    return 0
+
+
+def _handle_recall(args: argparse.Namespace, json_mode: bool) -> int:
+    """Execute FTS5 bigram recall and return ranked L1 memory hits."""
+    from mipmem.core.fts_recall import recall_memory
+
+    paths = _resolve_active_paths(getattr(args, "vault", None))
+    _require_initialized_vault(paths.vault_dir)
+    _, locale = _resolve_host_and_locale(paths, None, getattr(args, "locale", None))
+
+    result = recall_memory(
+        paths.vault_dir,
+        str(args.query),
+        locale=locale,
+        host_id=getattr(args, "host", None),
+        status=getattr(args, "status", None),
+        limit=int(getattr(args, "limit", 5)),
+        scope=str(getattr(args, "scope", "all")),
+    )
+    if json_mode:
+        _emit_json({"success": True, "result": result.to_dict()})
+    else:
+        if not result.hits:
+            sys.stdout.write("No matching memories found.\n")
+        else:
+            for hit in result.hits:
+                sys.stdout.write(f"{hit.l1_card}\n\n")
+    return 0
+
+
+def _read_brainstorm_input_file(raw_file: str) -> str:
+    """Safely read a regular input Markdown file bounded by MAX_BRAINSTORM_BYTES."""
+    from mipmem.core.brainstorms import MAX_BRAINSTORM_BYTES
+    from mipmem.core.diagnostics import CLI_INVALID_ARGUMENT, MipmemError
+
+    candidate = Path(raw_file).expanduser()
+    if candidate.is_symlink():
+        raise MipmemError(
+            CLI_INVALID_ARGUMENT,
+            f"Refusing to read symlink brainstorm source file: {raw_file!r}.",
+        )
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise MipmemError(
+            CLI_INVALID_ARGUMENT,
+            f"Brainstorm input file not found: {raw_file!r}.",
+        )
+    if resolved.stat().st_size > MAX_BRAINSTORM_BYTES:
+        raise MipmemError(
+            CLI_INVALID_ARGUMENT,
+            f"Brainstorm file exceeds {MAX_BRAINSTORM_BYTES} bytes limit.",
+        )
+    return resolved.read_text(encoding="utf-8")
+
+
+def _handle_bs(args: argparse.Namespace, json_mode: bool) -> int:
+    """Handle `mipmem bs [list|save|view|status]` commands lazily."""
+    from mipmem.core.brainstorms import (
+        load_brainstorm_shard,
+        save_brainstorm_shard,
+        update_brainstorm_status,
+    )
+    from mipmem.core.diagnostics import CLI_INVALID_ARGUMENT, MipmemError
+    from mipmem.core.fts_recall import list_indexed_brainstorms, sync_fts_index
+    from mipmem.core.mipmap import render_l1_skeleton, slice_brainstorm_l2
+
+    paths = _resolve_active_paths(getattr(args, "vault", None))
+    _require_initialized_vault(paths.vault_dir)
+    action = getattr(args, "bs_action", None) or "list"
+
+    if action == "list":
+        items = list_indexed_brainstorms(
+            paths.vault_dir,
+            status=getattr(args, "status", None),
+            host_id=getattr(args, "host", None),
+            auto_sync=True,
+        )
+        if json_mode:
+            _emit_json({"success": True, "brainstorms": items})
+        else:
+            for item in items:
+                sys.stdout.write(
+                    f"- {item['bs_id']} [{item['effective_status']}] "
+                    f"({item['origin_host']}) {item['title']}\n"
+                )
+        return 0
+
+    if action == "save":
+        host_id, locale = _resolve_host_and_locale(
+            paths, getattr(args, "host", None), None
+        )
+        file_arg = getattr(args, "file", None)
+        content_arg = getattr(args, "content", None)
+        if file_arg:
+            content = _read_brainstorm_input_file(str(file_arg))
+        elif content_arg is not None:
+            content = str(content_arg)
+        else:
+            content = f"# {args.title}\n"
+
+        raw_tags = getattr(args, "tags", None)
+        tag_list = (
+            [t.strip() for t in str(raw_tags).split(",") if t.strip()]
+            if raw_tags
+            else None
+        )
+        shard = save_brainstorm_shard(
+            paths.vault_dir,
+            str(args.title),
+            content,
+            host_id=host_id,
+            status=str(getattr(args, "status", "open")),
+            tags=tag_list,
+        )
+        sync_fts_index(paths.vault_dir, locale=locale)
+        if json_mode:
+            _emit_json({"success": True, "brainstorm": shard.to_meta_dict()})
+        else:
+            sys.stdout.write(
+                f"Saved brainstorm {shard.bs_id} ({shard.line_count} lines) "
+                f"to {shard.md_rel_path}\n"
+            )
+        return 0
+
+    if action == "view":
+        shard, content = load_brainstorm_shard(paths.vault_dir, str(args.bs_id))
+        slice_sel = getattr(args, "slice", None)
+        if bool(getattr(args, "l1", False)) and not slice_sel:
+            l1 = render_l1_skeleton(shard)
+            if json_mode:
+                _emit_json({"success": True, "mipmap": l1.to_dict()})
+            else:
+                sys.stdout.write(l1.content)
+            return 0
+        sliced = slice_brainstorm_l2(content, selector=slice_sel, bs_id=shard.bs_id)
+        if json_mode:
+            _emit_json({"success": True, "slice": sliced.to_dict()})
+        else:
+            sys.stdout.write(sliced.content)
+        return 0
+
+    if action == "status":
+        host_id, locale = _resolve_host_and_locale(
+            paths, getattr(args, "host", None), None
+        )
+        event = update_brainstorm_status(
+            paths.vault_dir,
+            str(args.bs_id),
+            str(args.new_status),
+            actor_host=host_id,
+            reason=str(getattr(args, "reason", "") or ""),
+        )
+        sync_fts_index(paths.vault_dir, locale=locale)
+        if json_mode:
+            _emit_json({"success": True, "event": event})
+        else:
+            sys.stdout.write(
+                f"Recorded status={args.new_status} for {args.bs_id} "
+                f"(actor={host_id}, event={event['event_id']})\n"
+            )
+        return 0
+
+    raise MipmemError(CLI_INVALID_ARGUMENT, f"Unsupported bs action: {action!r}.")
+
+
+# @para-doc [#csa-cli-memory-commands]
+def _register_memory_subcommands(
+    subparsers: Any,
+    json_parent: argparse.ArgumentParser,
+    parser_cls: type[argparse.ArgumentParser],
+) -> None:
+    """Register lazy Spec S2 CLI subcommands (index, recall, bs) on the root parser."""
+    p_idx = subparsers.add_parser(
+        "index",
+        parents=[json_parent],
+        help="Incrementally sync or rebuild the local FTS5 search index.",
+    )
+    p_idx.add_argument("--rebuild", action="store_true", help="Drop and rebuild global_fts.db.")
+    p_idx.add_argument("--locale", default=None, help="Override lexicon locale (en|vi).")
+    p_idx.add_argument("--vault", default=None, help="Override vault directory path.")
+
+    p_rec = subparsers.add_parser(
+        "recall",
+        parents=[json_parent],
+        help="Search cross-host memory using SQLite FTS5 BM25 Bigram recall.",
+    )
+    p_rec.add_argument("query", help="Search query text (EN or VI, accented or unaccented).")
+    p_rec.add_argument("--host", default=None, help="Filter hits by origin host_id.")
+    p_rec.add_argument("--status", default=None, help="Filter brainstorm hits by status.")
+    p_rec.add_argument("--limit", type=int, default=5, help="Maximum hits to return.")
+    p_rec.add_argument(
+        "--scope",
+        default="all",
+        choices=("all", "sessions", "brainstorms"),
+        help="Search scope.",
+    )
+    p_rec.add_argument("--locale", default=None, help="Override lexicon locale (en|vi).")
+    p_rec.add_argument("--vault", default=None, help="Override vault directory path.")
+
+    p_bs = subparsers.add_parser(
+        "bs",
+        parents=[json_parent],
+        help="Manage lossless brainstorm shards and surgical L2 slices.",
+    )
+    p_bs.add_argument("--vault", default=None, help="Override vault directory path.")
+    bs_subs = p_bs.add_subparsers(dest="bs_action", parser_class=parser_cls)
+
+    p_bs_list = bs_subs.add_parser("list", parents=[json_parent], help="List brainstorm shards.")
+    p_bs_list.add_argument("--status", default=None, help="Filter by effective LWW status.")
+    p_bs_list.add_argument("--host", default=None, help="Filter by origin host_id.")
+    p_bs_list.add_argument("--vault", default=None, help="Override vault directory path.")
+
+    p_bs_save = bs_subs.add_parser("save", parents=[json_parent], help="Save a brainstorm shard.")
+    p_bs_save.add_argument("title", help="Brainstorm title.")
+    p_bs_save.add_argument("--file", default=None, help="Path to source Markdown file.")
+    p_bs_save.add_argument("--content", default=None, help="Inline Markdown content.")
+    p_bs_save.add_argument("--status", default="open", help="Initial status (default: open).")
+    p_bs_save.add_argument("--tags", default=None, help="Comma-separated tags.")
+    p_bs_save.add_argument("--host", default=None, help="Explicit origin host_id.")
+    p_bs_save.add_argument("--vault", default=None, help="Override vault directory path.")
+
+    p_bs_view = bs_subs.add_parser("view", parents=[json_parent], help="View or slice brainstorm.")
+    p_bs_view.add_argument("bs_id", help="Brainstorm identifier.")
+    p_bs_view.add_argument(
+        "--slice",
+        default=None,
+        help="Surgical L2 selector (§k or #Lstart-Lend).",
+    )
+    p_bs_view.add_argument("--l1", action="store_true", help="Render L1 structural card.")
+    p_bs_view.add_argument("--vault", default=None, help="Override vault directory path.")
+
+    p_bs_st = bs_subs.add_parser(
+        "status",
+        parents=[json_parent],
+        help="Record a conflict-free status change in actor host journal.",
+    )
+    p_bs_st.add_argument("bs_id", help="Brainstorm identifier.")
+    p_bs_st.add_argument(
+        "new_status",
+        help="New status (open|decided|implementing|shipped|archived).",
+    )
+    p_bs_st.add_argument("--reason", default="", help="Optional status change reason.")
+    p_bs_st.add_argument("--host", default=None, help="Explicit actor host_id.")
+    p_bs_st.add_argument("--vault", default=None, help="Override vault directory path.")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -360,6 +707,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fail with VAULT_NOT_INITIALIZED if vault is not initialized.",
     )
+    p_health.add_argument(
+        "--deep",
+        action="store_true",
+        help="Probe SQLite FTS5 capability, tokenizer, index counts, and query latency.",
+    )
 
     p_mig = subparsers.add_parser(
         "migrate",
@@ -372,11 +724,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mig.add_argument("--apply", action="store_true", help="Copy files into the sharded vault.")
     p_mig.add_argument("--force", action="store_true", help="Overwrite conflicting target files.")
 
+    _register_memory_subcommands(subparsers, json_parent, _CliArgumentParser)
+
     return parser
 
 
 def dispatch_full_cli(raw_args: list[str], boot_started: float) -> int:
-    """Parse full argparse CLI arguments and handle Spec S1 error envelopes."""
+    """Parse full argparse CLI arguments and handle Spec S1/S2 error envelopes."""
     json_mode = "--json" in raw_args
     parser = _build_parser()
     try:
@@ -399,6 +753,12 @@ def dispatch_full_cli(raw_args: list[str], boot_started: float) -> int:
             return _handle_health_full(args, json_mode, boot_started)
         if cmd == "migrate":
             return _handle_migrate(args, json_mode)
+        if cmd == "index":
+            return _handle_index(args, json_mode)
+        if cmd == "recall":
+            return _handle_recall(args, json_mode)
+        if cmd == "bs":
+            return _handle_bs(args, json_mode)
         return 0
     except Exception as exc:
         from mipmem.core.diagnostics import MipmemError
