@@ -1,0 +1,126 @@
+name: CI Quality Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_macos:
+        description: "Run optional macOS smoke test (consumes 10x private runner minutes)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck-cleanroom:
+    name: Static Lint, Typecheck & Clean-Room
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Compile-check all Python sources
+        run: >
+          python3 -m py_compile
+          src/mipmem/*.py
+          src/mipmem/core/*.py
+          src/mipmem/i18n/*.py
+          scripts/*.py
+          tests/*.py
+
+      - name: Run flake8
+        run: |
+          python3 -m pip install --no-cache-dir flake8
+          flake8 src scripts tests
+
+      - name: Run pyright
+        run: npx --yes pyright
+
+      - name: Run Clean-Room Scanner
+        run: python3 scripts/check_cleanroom.py
+
+  test-matrix:
+    name: Zero-Dep Test Suite (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verify SQLite FTS5 capability and run unittest without pip install
+        run: |
+          python3 --version
+          PYTHONPATH=src:. python3 -m unittest discover -s tests -v
+
+  pyz-reproducibility:
+    name: Deterministic .pyz Bundle Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rebuild zipapp and verify byte-for-byte determinism
+        run: |
+          python3 scripts/build_pyz.py
+          git diff --exit-code bin/mipmem.pyz
+
+      - name: Verify zipapp integrity and isolated /tmp smoke test
+        run: |
+          python3 -c "
+          import json, shutil, subprocess, zipfile
+          from pathlib import Path
+          pyz = Path('bin/mipmem.pyz')
+          with zipfile.ZipFile(pyz, 'r') as zf:
+              assert zf.testzip() is None, 'zipapp integrity check failed'
+          tmp_pyz = Path('/tmp/mipmem-ci-check.pyz')
+          shutil.copy2(pyz, tmp_pyz)
+          proc = subprocess.run(
+              ['env', '-i', 'HOME=/tmp', 'PATH=/usr/bin:/bin', 'python3', str(tmp_pyz), 'health', '--json'],
+              capture_output=True,
+              text=True,
+              check=True,
+          )
+          payload = json.loads(proc.stdout)
+          assert payload['success'] is True, payload
+          print('ISOLATED_PYZ_HEALTH_OK:', payload)
+          tmp_pyz.unlink()
+          "
+
+  macos-smoke:
+    name: Optional macOS Smoke Test
+    if: github.event_name == 'workflow_dispatch' && inputs.run_macos == true
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run zero-dependency test suite on macOS
+        run: PYTHONPATH=src:. python3 -m unittest discover -s tests -v

@@ -107,6 +107,10 @@ MipMem **never stores Git PATs, SSH private keys, or API secrets** inside `confi
 
 ```text
 .
+├── .github/
+│   ├── PULL_REQUEST_TEMPLATE.md     # Standard OSS PR verification checklist
+│   └── workflows/
+│       └── ci.yml                   # 3-job GitHub Actions CI (Python 3.9–3.13 zero-dep matrix)
 ├── config.example.toml              # Clean starter config template
 ├── pyproject.toml                   # Python >= 3.9, dependencies = []
 ├── LICENSE                          # MIT License
@@ -154,6 +158,16 @@ python3 ./bin/mipmem.pyz health --json
 python3 scripts/check_cleanroom.py
 PYTHONPATH=src:. python3 -m unittest discover -s tests -v
 ```
+
+### Continuous Integration & PR Quality Gates
+
+Every pull request targeting `main` runs the automated workflow in [.github/workflows/ci.yml](.github/workflows/ci.yml) across three parallel jobs:
+
+1. **Static Lint, Typecheck & Clean-Room (`lint-typecheck-cleanroom`):** Runs `py_compile`, `flake8`, `pyright`, and `scripts/check_cleanroom.py`.
+2. **Zero-Dep Test Matrix (`test-matrix`):** Runs the stdlib `unittest` suite across **Python `3.9`, `3.10`, `3.11`, `3.12`, and `3.13`** with **zero `pip install` steps**, proving `dependencies = []` on clean runners. An optional `macos-latest` smoke job is available via manual `workflow_dispatch`.
+3. **Deterministic `.pyz` Verification (`pyz-reproducibility`):** Rebuilds `bin/mipmem.pyz`, checks `git diff --exit-code bin/mipmem.pyz` for byte-for-byte determinism, validates `ZipFile.testzip()`, and runs an isolated `/tmp` `health --json` smoke check.
+
+*(Note: Branch Protection rulesets and GitHub Secret Scanning enforcement are activated when transitioning to a public `v1.0.0` release; during `v0.x` private incubation, GitHub Actions status checks and `scripts/check_cleanroom.py` provide full automated verification on every PR.)*
 
 ---
 
