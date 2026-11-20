@@ -14,7 +14,17 @@ from unittest import mock
 
 from mipmem.core import diagnostics
 from mipmem.core.diagnostics import (
+    ALL_ERROR_CODES,
+    BRAINSTORM_NOT_FOUND,
     CONFIG_INVALID_TOML,
+    CP_FTS_01,
+    CP_IDX_01,
+    CP_MIP_01,
+    FTS_INDEX_CORRUPT,
+    FTS_UNAVAILABLE,
+    INVALID_BRAINSTORM_STATUS,
+    INVALID_SLICE_SELECTOR,
+    S2_ERROR_CODES,
     SPEC_ERROR_CODES,
     MipmemError,
     RotatingJsonLogger,
@@ -133,6 +143,29 @@ class TestDiagnostics(unittest.TestCase):
                 },
             },
         )
+
+    def test_s2_error_codes_and_checkpoints(self) -> None:
+        self.assertEqual(
+            S2_ERROR_CODES,
+            (
+                FTS_UNAVAILABLE,
+                FTS_INDEX_CORRUPT,
+                BRAINSTORM_NOT_FOUND,
+                INVALID_SLICE_SELECTOR,
+                INVALID_BRAINSTORM_STATUS,
+            ),
+        )
+        self.assertEqual(len(ALL_ERROR_CODES), 11)
+        self.assertEqual((CP_IDX_01, CP_FTS_01, CP_MIP_01), ("CP-IDX-01", "CP-FTS-01", "CP-MIP-01"))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_file = Path(tmp_dir) / "mipmem.log"
+            logger = RotatingJsonLogger(log_path=log_file)
+            for cp in (CP_IDX_01, CP_FTS_01, CP_MIP_01):
+                logger.log_event("INFO", "fts_recall", cp, details={"ok": True})
+            lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 3)
+            events = [json.loads(line)["event"] for line in lines]
+            self.assertEqual(events, ["CP-IDX-01", "CP-FTS-01", "CP-MIP-01"])
 
 
 if __name__ == "__main__":
