@@ -131,18 +131,79 @@ def _fast_health(raw_args: list[str], started: float) -> int | None:
     return 0
 
 
+_MAX_FAST_HOOK_BYTES = 4 * 1024 * 1024
+
+
+def _fast_flat_skip(event: str, stripped: bytes) -> bool:
+    """Detect unambiguous no-op hook payloads on flat JSON objects without importing json/re."""
+    if len(stripped) > 4096 or stripped[:1] != b"{" or stripped[-1:] != b"}":
+        return False
+    if b"\\" in stripped or stripped.count(b"{") != 1 or stripped.count(b"}") != 1:
+        return False
+    if stripped.count(b'"') % 2 != 0:
+        return False
+    try:
+        text = stripped.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    compact = "".join(text.split())
+    if event == "pre-invocation":
+        marker = '"invocationNum":'
+        pos = compact.find(marker)
+        if pos >= 0:
+            rest = compact[pos + len(marker):]
+            end = 0
+            while end < len(rest) and rest[end] in "-0123456789":
+                end += 1
+            tok = rest[:end]
+            if tok and (tok.isdigit() or (tok[0] == "-" and tok[1:].isdigit())) and int(tok) != 1:
+                if end < len(rest) and rest[end] in ",}":
+                    return True
+    elif event == "stop":
+        if (
+            '"terminationReason":"TERMINAL_CUSTOM_HOOK"' in compact
+            or '"continuationActive":true' in compact
+            or '"isSubagent":true' in compact
+        ):
+            return True
+    return False
+
+
+# @para-doc [#csa-cli-hook-mcp-entrypoint]
+def _fast_hook_dispatch(raw_args: list[str]) -> int | None:
+    """Serve `mipmem hook <session-start|pre-invocation|stop>` without argparse overhead."""
+    if len(raw_args) != 2 or raw_args[0] != "hook":
+        return None
+    event = raw_args[1]
+    if event not in ("session-start", "pre-invocation", "stop"):
+        return None
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    chunk = stream.read(_MAX_FAST_HOOK_BYTES + 1)
+    raw_bytes = chunk.encode("utf-8", errors="replace") if isinstance(chunk, str) else bytes(chunk)
+    if len(raw_bytes) <= _MAX_FAST_HOOK_BYTES and _fast_flat_skip(event, raw_bytes.strip()):
+        sys.stdout.write("{}\n")
+        sys.stdout.flush()
+        return 0
+    from mipmem.adapters.hook_io import run_hook_safe
+
+    return run_hook_safe(event, preloaded_bytes=raw_bytes)
+
+
 # @para-doc [#csa-cli-foundation-router]
 def main(
     argv: list[str] | tuple[str, ...] | None = None,
     *,
     boot_started: float | None = None,
 ) -> int:
-    """Dispatch mipmem CLI commands cleanly with a sub-25ms health fast-path."""
+    """Dispatch mipmem CLI commands cleanly with sub-25ms health and hook fast-paths."""
     started = boot_started if boot_started is not None else time.perf_counter()
     raw_args = list(sys.argv[1:] if argv is None else argv)
     fast_rc = _fast_health(raw_args, started)
     if fast_rc is not None:
         return fast_rc
+    hook_rc = _fast_hook_dispatch(raw_args)
+    if hook_rc is not None:
+        return hook_rc
     from mipmem.cli_commands import dispatch_full_cli
 
     return dispatch_full_cli(raw_args, started)
