@@ -1,0 +1,18 @@
+{
+  "name": "mipmem",
+  "displayName": "MipMem Cognitive Memory",
+  "version": "0.2.0",
+  "description": "Zero-dependency, zero-LLM-token 4-layer mipmapped cognitive memory engine, lossless brainstorm vault, and local stdio MCP server for Antigravity CLI and IDE.",
+  "author": {
+    "name": "pageel",
+    "url": "https://github.com/pageel"
+  },
+  "homepage": "https://github.com/pageel/mipmem",
+  "repository": "https://github.com/pageel/mipmem",
+  "suggestedPrompts": [
+    "/mem status",
+    "/mem help",
+    "/mem bs list",
+    "/mem handoff"
+  ]
+}

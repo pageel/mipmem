@@ -734,6 +734,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lifecycle hook event name.",
     )
 
+    p_mcp = subparsers.add_parser(
+        "mcp",
+        help="Run the universal local stdio MCP JSON-RPC 2.0 server.",
+    )
+    p_mcp.add_argument("--vault", default=None, help="Override vault directory path.")
+
     _register_memory_subcommands(subparsers, json_parent, _CliArgumentParser)
 
     return parser
@@ -773,6 +779,11 @@ def dispatch_full_cli(raw_args: list[str], boot_started: float) -> int:
             from mipmem.adapters.hook_io import run_hook_safe
 
             return run_hook_safe(str(args.hook_event))
+        if cmd == "mcp":
+            from mipmem.mcp.server import run_mcp_server
+
+            vault_override = getattr(args, "vault", None)
+            return run_mcp_server(vault_root=vault_override)
         return 0
     except Exception as exc:
         from mipmem.core.diagnostics import MipmemError

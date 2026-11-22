@@ -492,6 +492,56 @@ class TestCliDispatcher(unittest.TestCase):
             self.assertEqual(proc_stop.returncode, 0, msg=proc_stop.stderr + proc_stop.stdout)
             self.assertEqual(json.loads(proc_stop.stdout), {})
 
+    def test_cli_mcp_subcommand_e2e_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            env_map = {
+                "MIPMEM_CONFIG_DIR": str(base / "cfg"),
+                "MIPMEM_VAULT_DIR": str(base / "vault"),
+                "MIPMEM_CACHE_DIR": str(base / "cache"),
+            }
+            rc, out, err = _run_cli(["init", "--host", "host-mcp", "--json"], env_map)
+            self.assertEqual(rc, 0, msg=out + err)
+
+            sub_env = {
+                key: val
+                for key, val in os.environ.items()
+                if key not in ("PYTHONPATH", "MIPMEM_CONFIG_DIR", "MIPMEM_VAULT_DIR")
+            }
+            sub_env["PYTHONPATH"] = str(REPO_ROOT / "src")
+            sub_env.update(env_map)
+
+            ndjson_in = "\n".join(
+                [
+                    json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                    json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 3,
+                            "method": "tools/call",
+                            "params": {"name": "mem_fleet_status", "arguments": {}},
+                        }
+                    ),
+                ]
+            ) + "\n"
+            proc = subprocess.run(
+                [sys.executable, "-m", "mipmem", "mcp"],
+                input=ndjson_in,
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr + proc.stdout)
+            self.assertEqual(proc.stderr, "")
+            lines = proc.stdout.strip().splitlines()
+            self.assertEqual(len(lines), 3)
+            r1, r2, r3 = (json.loads(line) for line in lines)
+            self.assertEqual(r1["result"]["serverInfo"]["name"], "mipmem")
+            self.assertEqual(len(r2["result"]["tools"]), 6)
+            self.assertEqual(r3["result"]["structuredContent"]["subapp_telemetry"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
