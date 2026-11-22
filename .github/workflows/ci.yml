@@ -41,6 +41,8 @@ jobs:
           src/mipmem/*.py
           src/mipmem/core/*.py
           src/mipmem/i18n/*.py
+          src/mipmem/adapters/*.py
+          src/mipmem/mcp/*.py
           scripts/*.py
           tests/*.py
 
@@ -54,6 +56,14 @@ jobs:
 
       - name: Run Clean-Room Scanner
         run: python3 scripts/check_cleanroom.py
+
+      - name: Validate Native Antigravity Plugin bundle
+        run: >
+          PYTHONPATH=src python3 -c
+          "import mipmem;
+          from mipmem.adapters.plugin_manifest import assert_valid_plugin_bundle;
+          rep = assert_valid_plugin_bundle('.', expected_version=mipmem.__version__);
+          print('PLUGIN_BUNDLE_OK:', rep.checked_files)"
 
   test-matrix:
     name: Zero-Dep Test Suite (Python ${{ matrix.python-version }})

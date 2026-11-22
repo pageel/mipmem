@@ -63,12 +63,16 @@ class TestCliDispatcher(unittest.TestCase):
                 "assert 'mipmem.core.fts_recall' not in sys.modules; "
                 "assert 'mipmem.core.redactor' not in sys.modules; "
                 "assert 'mipmem.core.migrate_v2' not in sys.modules; "
+                "assert 'mipmem.adapters.hook_io' not in sys.modules; "
+                "assert 'mipmem.mcp.server' not in sys.modules; "
                 "rc = cli.main(['health', '--json']); "
                 "assert rc == 0; "
                 "assert 'sqlite3' not in sys.modules; "
                 "assert 'mipmem.core.fts_recall' not in sys.modules; "
                 "assert 'mipmem.core.redactor' not in sys.modules; "
-                "assert 'mipmem.core.migrate_v2' not in sys.modules"
+                "assert 'mipmem.core.migrate_v2' not in sys.modules; "
+                "assert 'mipmem.adapters.hook_io' not in sys.modules; "
+                "assert 'mipmem.mcp.server' not in sys.modules"
             )
             env = {
                 key: val
@@ -398,6 +402,145 @@ class TestCliDispatcher(unittest.TestCase):
             )
             self.assertNotEqual(rc, 0)
             self.assertEqual(json.loads(out)["error"]["code"], INVALID_BRAINSTORM_STATUS)
+
+    def test_fast_hook_dispatch_cli_subcommands_and_zero_sqlite_on_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            cfg_dir = base / "cfg"
+            vault_dir = base / "vault"
+            cache_dir = base / "cache"
+            ws_dir = base / "ws"
+            ws_dir.mkdir(parents=True)
+
+            env_map = {
+                "MIPMEM_CONFIG_DIR": str(cfg_dir),
+                "MIPMEM_VAULT_DIR": str(vault_dir),
+                "MIPMEM_CACHE_DIR": str(cache_dir),
+            }
+            rc, out, err = _run_cli(["init", "--host", "host-hook", "--json"], env_map)
+            self.assertEqual(rc, 0, msg=out + err)
+
+            sub_env = {
+                key: val
+                for key, val in os.environ.items()
+                if key not in ("PYTHONPATH", "MIPMEM_CONFIG_DIR", "MIPMEM_VAULT_DIR")
+            }
+            sub_env["PYTHONPATH"] = str(REPO_ROOT / "src")
+            sub_env.update(env_map)
+
+            # 1. Fast hook skip path (invocationNum=2) bypasses cli_commands, argparse & sqlite3
+            skip_probe = (
+                "import sys; import mipmem.cli as cli; "
+                "rc = cli.main(['hook', 'pre-invocation']); "
+                "assert rc == 0; "
+                "assert 'mipmem.cli_commands' not in sys.modules; "
+                "assert 'argparse' not in sys.modules; "
+                "assert 'sqlite3' not in sys.modules"
+            )
+            proc_skip = subprocess.run(
+                [sys.executable, "-c", skip_probe],
+                input=json.dumps({"conversationId": "c1", "invocationNum": 2}),
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_skip.returncode, 0, msg=proc_skip.stderr + proc_skip.stdout)
+            self.assertEqual(json.loads(proc_skip.stdout), {})
+
+            # 2. PreInvocation /mem status via cli.main(['hook', 'pre-invocation'])
+            slash_payload = json.dumps(
+                {
+                    "conversationId": "c1",
+                    "invocationNum": 1,
+                    "lastUserInput": "/mem status",
+                    "workspacePaths": [str(ws_dir)],
+                    "transcriptPath": "/tmp/sb/.gemini/antigravity-cli/brain/c1/t.jsonl",
+                }
+            )
+            proc_slash = subprocess.run(
+                [sys.executable, "-m", "mipmem", "hook", "pre-invocation"],
+                input=slash_payload,
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_slash.returncode, 0, msg=proc_slash.stderr + proc_slash.stdout)
+            slash_data = json.loads(proc_slash.stdout)
+            self.assertEqual(slash_data["terminationBehavior"], "terminate")
+            self.assertIn(
+                "host-hook",
+                slash_data["injectSteps"][0]["systemMessage"]["metadata"]["user_markdown"],
+            )
+
+            # 3. Stop hook with TERMINAL_CUSTOM_HOOK returns {} cleanly
+            proc_stop = subprocess.run(
+                [sys.executable, "-m", "mipmem", "hook", "stop"],
+                input=json.dumps(
+                    {
+                        "conversationId": "c1",
+                        "terminationReason": "TERMINAL_CUSTOM_HOOK",
+                        "workspacePaths": [str(ws_dir)],
+                    }
+                ),
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_stop.returncode, 0, msg=proc_stop.stderr + proc_stop.stdout)
+            self.assertEqual(json.loads(proc_stop.stdout), {})
+
+    def test_cli_mcp_subcommand_e2e_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            env_map = {
+                "MIPMEM_CONFIG_DIR": str(base / "cfg"),
+                "MIPMEM_VAULT_DIR": str(base / "vault"),
+                "MIPMEM_CACHE_DIR": str(base / "cache"),
+            }
+            rc, out, err = _run_cli(["init", "--host", "host-mcp", "--json"], env_map)
+            self.assertEqual(rc, 0, msg=out + err)
+
+            sub_env = {
+                key: val
+                for key, val in os.environ.items()
+                if key not in ("PYTHONPATH", "MIPMEM_CONFIG_DIR", "MIPMEM_VAULT_DIR")
+            }
+            sub_env["PYTHONPATH"] = str(REPO_ROOT / "src")
+            sub_env.update(env_map)
+
+            ndjson_in = "\n".join(
+                [
+                    json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                    json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 3,
+                            "method": "tools/call",
+                            "params": {"name": "mem_fleet_status", "arguments": {}},
+                        }
+                    ),
+                ]
+            ) + "\n"
+            proc = subprocess.run(
+                [sys.executable, "-m", "mipmem", "mcp"],
+                input=ndjson_in,
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr + proc.stdout)
+            self.assertEqual(proc.stderr, "")
+            lines = proc.stdout.strip().splitlines()
+            self.assertEqual(len(lines), 3)
+            r1, r2, r3 = (json.loads(line) for line in lines)
+            self.assertEqual(r1["result"]["serverInfo"]["name"], "mipmem")
+            self.assertEqual(len(r2["result"]["tools"]), 6)
+            self.assertEqual(r3["result"]["structuredContent"]["subapp_telemetry"], [])
 
 
 if __name__ == "__main__":

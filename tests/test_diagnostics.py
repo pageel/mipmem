@@ -14,17 +14,28 @@ from unittest import mock
 
 from mipmem.core import diagnostics
 from mipmem.core.diagnostics import (
+    ADAPTER_READ_FAILED,
     ALL_ERROR_CODES,
     BRAINSTORM_NOT_FOUND,
     CONFIG_INVALID_TOML,
+    CP_ADP_01,
     CP_FTS_01,
+    CP_HK_01,
     CP_IDX_01,
+    CP_MCP_01,
     CP_MIP_01,
     FTS_INDEX_CORRUPT,
     FTS_UNAVAILABLE,
+    HOOK_INVALID_PAYLOAD,
     INVALID_BRAINSTORM_STATUS,
     INVALID_SLICE_SELECTOR,
+    MCP_INVALID_PARAMS,
+    MCP_METHOD_NOT_FOUND,
+    MCP_PARSE_ERROR,
+    PLUGIN_MANIFEST_INVALID,
     S2_ERROR_CODES,
+    S3_ERROR_CODES,
+    SLASH_COMMAND_INVALID,
     SPEC_ERROR_CODES,
     MipmemError,
     RotatingJsonLogger,
@@ -155,7 +166,7 @@ class TestDiagnostics(unittest.TestCase):
                 INVALID_BRAINSTORM_STATUS,
             ),
         )
-        self.assertEqual(len(ALL_ERROR_CODES), 11)
+        self.assertEqual(len(ALL_ERROR_CODES), 18)
         self.assertEqual((CP_IDX_01, CP_FTS_01, CP_MIP_01), ("CP-IDX-01", "CP-FTS-01", "CP-MIP-01"))
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_file = Path(tmp_dir) / "mipmem.log"
@@ -166,6 +177,32 @@ class TestDiagnostics(unittest.TestCase):
             self.assertEqual(len(lines), 3)
             events = [json.loads(line)["event"] for line in lines]
             self.assertEqual(events, ["CP-IDX-01", "CP-FTS-01", "CP-MIP-01"])
+
+    def test_s3_error_codes_and_checkpoints(self) -> None:
+        self.assertEqual(
+            S3_ERROR_CODES,
+            (
+                HOOK_INVALID_PAYLOAD,
+                ADAPTER_READ_FAILED,
+                SLASH_COMMAND_INVALID,
+                MCP_PARSE_ERROR,
+                MCP_METHOD_NOT_FOUND,
+                MCP_INVALID_PARAMS,
+                PLUGIN_MANIFEST_INVALID,
+            ),
+        )
+        self.assertEqual(len(S3_ERROR_CODES), 7)
+        self.assertEqual(len(set(ALL_ERROR_CODES)), 18)
+        self.assertEqual((CP_HK_01, CP_ADP_01, CP_MCP_01), ("CP-HK-01", "CP-ADP-01", "CP-MCP-01"))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_file = Path(tmp_dir) / "mipmem.log"
+            logger = RotatingJsonLogger(log_path=log_file)
+            for cp in (CP_HK_01, CP_ADP_01, CP_MCP_01):
+                logger.log_event("INFO", "adapters", cp, details={"ok": True})
+            lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 3)
+            events = [json.loads(line)["event"] for line in lines]
+            self.assertEqual(events, ["CP-HK-01", "CP-ADP-01", "CP-MCP-01"])
 
 
 if __name__ == "__main__":

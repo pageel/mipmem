@@ -1,11 +1,31 @@
 # Changelog
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, scripts/build_pyz.py on 2026-11-20 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/build_pyz.py on 2026-11-22 -->
 
 All notable changes to `mipmem` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.3.0] - 2026-11-22
+
+### Added
+
+- **Dual Antigravity CLI/IDE Transcript Adapters (`mipmem.adapters`):**
+  - Added `NormalizedConversation`, `TranscriptAdapter` `Protocol`, and `detect_surface_from_path()` (`cli` | `ide` | `generic`) in `src/mipmem/adapters/base.py`.
+  - Added read-only Antigravity CLI SQLite harvester (`src/mipmem/adapters/agy_cli.py::extract_cli_conversation`) opening `conversation_summaries.db` strictly with `mode=ro` (`timeout=2.0`), filtering subagents (`nesting_depth > 0` or non-empty `parent_conversation_id`), supporting JSONL fallback, and logging `CP-ADP-01`.
+  - Added Antigravity IDE JSONL harvester (`src/mipmem/adapters/agy_ide.py::extract_ide_conversation`) extracting `USER_INPUT`, `PLANNER_RESPONSE`, and `edited_files`/`touched_files`, lazily expanding steps with `truncated_fields` from `transcript_full.jsonl`, tolerating corrupted JSON lines, and intentionally skipping `artifactDirectoryPath` auto-scans.
+- **Unified `user_markdown` Hook Engine, `/mem` Dispatcher & Fast Hook Router:**
+  - Added `render_user_markdown_response()`, `render_system_injection()`, bounded `4 MB` stdin reader, and fail-open `run_hook_safe()` in `src/mipmem/adapters/hook_io.py` (`CP-HK-01`).
+  - Added shell-free local `/mem` command dispatcher (`src/mipmem/adapters/slash_mem.py::dispatch_slash_mem`) supporting `help`, `status`, `recall`, `list`, `bs [list|save|view|status]`, `config [show|get|set]`, and `handoff` with surface-aware GFM table widths and safe UTF-8 file guards (`<= 2 MB`, non-symlink, non-binary).
+  - Added `handle_session_start()` (`L0 <= 300` on `active`, `{}` on `passive`/`disabled`), `handle_pre_invocation()` (0-LLM-token `/mem` intercept via `metadata.user_markdown` + `terminationBehavior: "terminate"` on both CLI & IDE; active-only `L1 <= 450` Topic-Shift/Intent Gate), and `handle_stop()` (skipping `TERMINAL_CUSTOM_HOOK`, `continuationActive`, `disabled`, and subagents; redacting secrets; idempotent session writes; `PRIMARY_WORK` `latest_handoff.md` updates; incremental FTS5 sync).
+  - Added sub-25ms fast hook router (`src/mipmem/cli.py::_fast_hook_dispatch`) bypassing `argparse`/`json`/`sqlite3` on no-op hook skips while keeping `_fast_health()` untouched.
+- **Universal Local Memory MCP Server (`mipmem mcp`):**
+  - Added stdlib JSON-RPC 2.0 transport (`src/mipmem/mcp/server.py::StdioJsonRpcTransport` & `run_mcp_server`) auto-detecting both `NDJSON` and `Content-Length` stdio framing with a `4 MB` message cap, standard `-32700/-32600/-32601/-32602/-32603` error codes, and strict `stdout` purity (`CP-MCP-01`).
+  - Added 6 lazy local MCP tools (`src/mipmem/mcp/tools.py::McpToolRegistry`): `mem_recall`, `mem_bs_list`, `mem_bs_slice`, `mem_bs_save` (inline content or user-confirmed `file_path` with safety guards + redaction), `mem_handoff`, and `mem_fleet_status` (`subapp_telemetry: []`), wired via `mipmem mcp` in `cli_commands.py`.
+- **Isolated Native Antigravity Plugin Bundle & CI Validation:**
+  - Added Native Antigravity Plugin root files (`plugin.json`, flat-array `hooks.json`, relative `mcp_config.json`, plain-Markdown `rules/AGENTS.md` enforcing opt-in artifact capture confirmation, and `skills/mem/SKILL.md`) plus automated validator (`src/mipmem/adapters/plugin_manifest.py::validate_plugin_bundle`).
+  - Extended `core/diagnostics.py` with `S3_ERROR_CODES` (`7` codes, total `18`) and `CP-HK-01` / `CP-ADP-01` / `CP-MCP-01`; updated `.github/workflows/ci.yml` to compile-check `adapters/` & `mcp/` and enforce `assert_valid_plugin_bundle()`.
 
 ## [0.2.0] - 2026-11-20
 

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mipmem": {
+      "command": "python3",
+      "args": [
+        "bin/mipmem.pyz",
+        "mcp"
+      ]
+    }
+  }
+}

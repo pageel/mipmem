@@ -1,0 +1,25 @@
+{
+  "mipmem": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python3 ./bin/mipmem.pyz hook session-start",
+        "timeout": 10
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python3 ./bin/mipmem.pyz hook pre-invocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 ./bin/mipmem.pyz hook stop",
+        "timeout": 15
+      }
+    ]
+  }
+}
