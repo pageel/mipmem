@@ -296,9 +296,11 @@ def handle_session_start(
         return {}
 
     from mipmem.adapters.slash_mem import load_recent_sessions
+    from mipmem.config import resolve_paths
     from mipmem.core.brainstorms import BrainstormShard, load_brainstorm_shard
     from mipmem.core.fts_recall import list_indexed_brainstorms, sync_fts_index
     from mipmem.core.mipmap import render_l0_radar
+    from mipmem.core.subapps import load_subapp_telemetry, read_sync_alert
     from mipmem.core.workstreams import thread_workstreams
 
     sync_fts_index(vault_dir, locale=locale, logger=logger)
@@ -314,6 +316,9 @@ def handle_session_start(
         except Exception:
             continue
 
+    telemetry = load_subapp_telemetry(vault_dir, logger=logger)
+    sync_alert = read_sync_alert(resolve_paths(configured_vault_dir=vault_dir).cache_dir)
+
     l0 = render_l0_radar(
         sessions=sessions,
         brainstorms=shards,
@@ -321,6 +326,8 @@ def handle_session_start(
         config=cfg,
         locale=locale,
         logger=logger,
+        subapp_telemetry=telemetry,
+        sync_alert=sync_alert,
     )
     _emit_hook_checkpoint(
         logger,

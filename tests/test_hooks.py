@@ -859,5 +859,165 @@ class TestStopHookHarvester(unittest.TestCase):
             self.assertTrue(any(h.item_id == "conv-stop-cli" for h in recall_res.hits))
 
 
+class TestSubAppFleetAndL0HookIntegration(unittest.TestCase):
+    """Verify /mem fleet, /mem help, and SessionStart L0 telemetry alerts (Task 1.2)."""
+
+    def test_slash_mem_fleet_help_and_session_start_telemetry(self) -> None:
+        from mipmem.adapters.hook_io import handle_session_start
+        from mipmem.adapters.slash_mem import dispatch_slash_mem
+        from mipmem.core.mipmap import estimate_tokens
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            vault_dir = root / "vault"
+            cfg_file = root / "config" / "config.toml"
+            active_ws = root / "ws-active"
+            active_ws.mkdir(parents=True)
+            init_vault(vault_dir, host_id="host-alpha")
+
+            cfg = default_config()
+            cfg["core"]["host_id"] = "host-alpha"
+            cfg["core"]["vault_path"] = str(vault_dir)
+            cfg["workspace_policies"]["passive_paths"] = []
+            cfg["workspace_policies"]["disabled_paths"] = []
+            save_config(cfg, cfg_file)
+
+            telemetry_dir = vault_dir / "hosts" / "host-alpha" / "telemetry"
+            telemetry_dir.mkdir(parents=True, exist_ok=True)
+            (telemetry_dir / "kernel-watch.status.json").write_text(
+                json.dumps(
+                    {
+                        "app_id": "kernel-watch",
+                        "status": "critical",
+                        "badge": "reboot needed",
+                        "l0_summary": "Kernel update requires reboot",
+                        "alert_on_l0": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            write_session_record(
+                vault_dir,
+                SessionRecord(
+                    conversation_id="conv-sub-01",
+                    host_id="host-alpha",
+                    surface="cli",
+                    last_modified_time="2026-11-23T09:30:00.000Z",
+                    step_count=10,
+                    title="Implement fleet monitoring",
+                    edited_files=["src/mipmem/core/subapps.py"],
+                    recent_prompts=["Add fleet view"],
+                    last_agent_response="Ready.",
+                ),
+            )
+
+            help_md = dispatch_slash_mem(
+                "/mem help", vault_root=vault_dir, config_file=cfg_file
+            )
+            self.assertIn("/mem fleet", help_md)
+
+            fleet_cli = dispatch_slash_mem(
+                "/mem fleet",
+                surface="cli",
+                vault_root=vault_dir,
+                config_file=cfg_file,
+            )
+            self.assertIn("kernel-watch", fleet_cli)
+            self.assertIn("host-alpha", fleet_cli)
+
+            start_res = handle_session_start(
+                {"conversationId": "c-s4", "workspacePaths": [str(active_ws)]},
+                vault_root=vault_dir,
+                config_file=cfg_file,
+            )
+            injected = start_res["injectSteps"][0]["systemMessage"]["systemMessage"]
+            self.assertIn("kernel-watch", injected)
+            self.assertIn("Kernel update requires reboot", injected)
+            self.assertLessEqual(estimate_tokens(injected), 300)
+
+    def test_slash_mem_delegates_trusted_subapp_and_never_overrides_core(self) -> None:
+        from mipmem.adapters.slash_mem import dispatch_slash_mem
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            vault_dir = root / "vault"
+            cfg_dir = root / "config"
+            cfg_file = cfg_dir / "config.toml"
+            log_path = root / "mipmem.log"
+            init_vault(vault_dir, host_id="host-alpha")
+
+            cfg = default_config()
+            cfg["core"]["host_id"] = "host-alpha"
+            cfg["core"]["vault_path"] = str(vault_dir)
+            save_config(cfg, cfg_file)
+            logger = RotatingJsonLogger(log_path=log_path)
+
+            apps_dir = cfg_dir / "apps.d"
+            bin_dir = cfg_dir / "bin"
+            apps_dir.mkdir(parents=True, exist_ok=True)
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(apps_dir, 0o700)
+
+            script = bin_dir / "hello-app.py"
+            secret = "ghp_" + "F" * 24
+            script.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                f"print('hello-subapp args=' + ','.join(sys.argv[1:]) + ' tok={secret}')\n",
+                encoding="utf-8",
+            )
+            os.chmod(script, 0o700)
+            manifest = apps_dir / "hello-app.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "subcommand": "hello-app",
+                        "executable": str(script),
+                        "args": ["--ok"],
+                        "timeout_sec": 5,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(manifest, 0o600)
+
+            # Attempt to override core 'recall' command MUST be ignored by dispatcher
+            collision_manifest = apps_dir / "recall.json"
+            collision_manifest.write_text(
+                json.dumps({"subcommand": "recall", "executable": str(script)}),
+                encoding="utf-8",
+            )
+            os.chmod(collision_manifest, 0o600)
+
+            res = dispatch_slash_mem(
+                "/mem hello-app --ping",
+                vault_root=vault_dir,
+                config_file=cfg_file,
+                logger=logger,
+            )
+            self.assertIn("hello-subapp", res)
+            self.assertIn("--ok,--ping", res)
+            self.assertIn("[REDACTED:GITHUB_PAT]", res)
+            self.assertNotIn(secret, res)
+
+            recall_res = dispatch_slash_mem(
+                '/mem recall "hello"',
+                vault_root=vault_dir,
+                config_file=cfg_file,
+                logger=logger,
+            )
+            self.assertNotIn("hello-subapp", recall_res)
+
+            # World-writable delegate triggers safe formatted error (no crash)
+            os.chmod(manifest, 0o666)
+            bad_res = dispatch_slash_mem(
+                "/mem hello-app --ping",
+                vault_root=vault_dir,
+                config_file=cfg_file,
+                logger=logger,
+            )
+            self.assertIn("SUBAPP_UNTRUSTED_PERMS", bad_res)
+
+
 if __name__ == "__main__":
     unittest.main()

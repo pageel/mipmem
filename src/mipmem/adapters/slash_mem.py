@@ -230,6 +230,8 @@ def _render_help() -> str:
             "| `/mem bs status <id> <status>` | Update brainstorm status via host journal |",
             "| `/mem config [show \\| get <k> \\| set <k> <v>]` | View or update config.toml |",
             "| `/mem handoff [@<host_id>]` | Show latest Primary Work Anchor handoff |",
+            "| `/mem fleet` | Show multi-host vault, sub-apps, and sync status |",
+            "| `/mem <app> [args...]` | Run a local trusted sub-app from `apps.d` |",
         ]
     )
 
@@ -615,6 +617,27 @@ def _cmd_handoff(tokens: list[str], vault_dir: Path, default_host: str, locale: 
     return read_host_handoff(vault_dir, safe_host, locale=locale)
 
 
+def _cmd_fleet(
+    vault_dir: Path,
+    default_host: str,
+    surface: str,
+    logger: Optional[RotatingJsonLogger],
+) -> str:
+    """Handle `/mem fleet` showing multi-host inventory, sub-apps telemetry, and sync status."""
+    if not is_vault_initialized(vault_dir):
+        return f"Vault is not initialized at `{vault_dir}`."
+    from mipmem.core.subapps import build_fleet_status, format_fleet_markdown
+
+    paths = resolve_paths(configured_vault_dir=vault_dir)
+    fleet = build_fleet_status(
+        vault_dir,
+        active_host_id=default_host,
+        cache_dir=paths.cache_dir,
+        logger=logger,
+    )
+    return format_fleet_markdown(fleet, surface=surface)
+
+
 # @para-doc [#csa-hook-slash-mem-dispatcher]
 def dispatch_slash_mem(
     raw_command: str,
@@ -665,6 +688,19 @@ def dispatch_slash_mem(
             return _cmd_config(args, cfg_path, cfg)
         if subcmd == "handoff":
             return _cmd_handoff(args, vault_dir, active_host, active_locale)
+        if subcmd == "fleet":
+            return _cmd_fleet(vault_dir, active_host, surface, logger)
+
+        from mipmem.core.subapps import has_app_delegate_candidate, run_app_delegate
+
+        if has_app_delegate_candidate(cfg_path.parent, subcmd):
+            return run_app_delegate(
+                subcmd,
+                args,
+                config_dir=cfg_path.parent,
+                vault_root=vault_dir,
+                logger=logger,
+            )
 
         raise MipmemError(
             SLASH_COMMAND_INVALID,
@@ -675,12 +711,13 @@ def dispatch_slash_mem(
             raise
         err_code = str(getattr(exc, "code", SLASH_COMMAND_INVALID))
         err_msg = str(getattr(exc, "message", str(exc)))
+        logged_code = err_code if err_code.startswith("SUBAPP_") else SLASH_COMMAND_INVALID
         if logger is not None:
             logger.log_event(
                 "INFO",
                 "slash_mem",
                 CP_HK_01,
-                error_code=SLASH_COMMAND_INVALID if err_code != SLASH_COMMAND_INVALID else err_code,
+                error_code=logged_code,
                 details={"subcmd": subcmd, "surface": surface, "source_code": err_code},
             )
         return f"**Invalid `/mem` command (`{err_code}`):** {err_msg}"

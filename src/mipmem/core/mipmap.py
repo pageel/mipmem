@@ -205,10 +205,30 @@ def render_l0_radar(
     config: Optional[Mapping[str, Any]] = None,
     locale: str = "en",
     logger: Optional[RotatingJsonLogger] = None,
+    subapp_telemetry: Sequence[Any] = (),
+    sync_alert: Optional[str] = None,
 ) -> MipmapOutput:
     """Render a compact L0 startup radar strictly bounded by l0_max_tokens (default 300)."""
     budget = _resolve_budget(max_tokens, config, "l0_max_tokens", DEFAULT_L0_MAX_TOKENS)
     lines: list[str] = ["# MipMem L0 Radar"]
+
+    telemetry_lines: list[str] = []
+    has_telemetry_alert = bool(sync_alert) or any(
+        getattr(item, "status", "ok") in ("warn", "critical")
+        or bool(getattr(item, "alert_on_l0", False))
+        for item in subapp_telemetry
+    )
+    if subapp_telemetry or sync_alert:
+        from mipmem.core.subapps import format_l0_telemetry_lines
+
+        telemetry_lines = format_l0_telemetry_lines(
+            subapp_telemetry,
+            sync_alert=sync_alert,
+        )
+
+    if telemetry_lines and has_telemetry_alert:
+        lines.append("## Sub-Apps")
+        lines.extend(telemetry_lines)
 
     if workstreams:
         lines.append("## Workstreams")
@@ -250,6 +270,10 @@ def render_l0_radar(
                 f"- `{shard.bs_id}` [{shard.status}] ({shard.origin_host}) "
                 f"{shard.title}: {scent}"
             )
+
+    if telemetry_lines and not has_telemetry_alert:
+        lines.append("## Sub-Apps")
+        lines.extend(telemetry_lines)
 
     rendered, truncated = _truncate_to_token_budget(lines, budget)
     est = estimate_tokens(rendered)

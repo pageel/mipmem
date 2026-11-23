@@ -456,6 +456,43 @@ class TestMcpMemoryToolRegistry(unittest.TestCase):
             resps = [json.loads(line) for line in out_buf.getvalue().decode("utf-8").splitlines()]
             self.assertEqual([r["error"]["code"] for r in resps], [-32602] * 5)
 
+    def test_mem_fleet_status_returns_subapp_telemetry_and_sync_status(self) -> None:
+        from mipmem.mcp.tools import call_mcp_tool
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            vault_dir, cfg_file, log_path = self._setup_vault(root)
+            telemetry_dir = vault_dir / "hosts" / "host-alpha" / "telemetry"
+            telemetry_dir.mkdir(parents=True, exist_ok=True)
+            (telemetry_dir / "pkg-audit.detail.md").write_text("# Audit\n", encoding="utf-8")
+            (telemetry_dir / "pkg-audit.status.json").write_text(
+                json.dumps(
+                    {
+                        "app_id": "pkg-audit",
+                        "status": "warn",
+                        "badge": "2 outdated",
+                        "l0_summary": "2 packages need attention",
+                        "alert_on_l0": True,
+                        "detail_file": "telemetry/pkg-audit.detail.md",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            logger = RotatingJsonLogger(log_path=log_path)
+            fleet = call_mcp_tool(
+                "mem_fleet_status",
+                {},
+                vault_root=vault_dir,
+                config_file=cfg_file,
+                logger=logger,
+            )
+            self.assertIn("sync_status", fleet)
+            self.assertEqual(len(fleet["subapp_telemetry"]), 1)
+            entry = fleet["subapp_telemetry"][0]
+            self.assertEqual(entry["app_id"], "pkg-audit")
+            self.assertEqual(entry["status"], "warn")
+            self.assertEqual(entry["detail_file"], "telemetry/pkg-audit.detail.md")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -806,19 +806,38 @@ def _index_mutations_entry(conn: sqlite3.Connection, entry: _VaultFileEntry) -> 
 
 def _index_telemetry_entry(conn: sqlite3.Connection, entry: _VaultFileEntry) -> None:
     """Upsert one per-host private sub-app telemetry status JSON into subapp_telemetry."""
+    from mipmem.core.subapps import (
+        VALID_TELEMETRY_STATUSES,
+        extract_safe_detail_path,
+        is_valid_app_id,
+    )
+
     abs_file = Path(entry.abs_path)
+    if abs_file.is_symlink():
+        return
     try:
         data = json.loads(abs_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return
     if not isinstance(data, dict):
         return
-    app_id = str(data.get("app_id", "")).strip() or abs_file.name[: -len(".status.json")]
+    raw_app_id = data.get("app_id")
+    stem_id = abs_file.name[: -len(".status.json")]
+    app_id = (
+        str(raw_app_id).strip()
+        if raw_app_id is not None and str(raw_app_id).strip()
+        else stem_id
+    )
+    if not is_valid_app_id(app_id):
+        return
     status = str(data.get("status", "ok")).strip().lower()
+    if status not in VALID_TELEMETRY_STATUSES:
+        return
     badge = str(data.get("badge", "")).strip()
     l0_summary = str(data.get("l0_summary", "")).strip()
     alert_on_l0 = 1 if bool(data.get("alert_on_l0", False)) else 0
-    detail_path = data.get("detail_path")
+    host_dir = abs_file.parent.parent
+    safe_detail = extract_safe_detail_path(host_dir, data)
     updated_at = str(data.get("updated_at", "")).strip() or _utc_timestamp_ms()
     conn.execute(
         """
@@ -833,7 +852,7 @@ def _index_telemetry_entry(conn: sqlite3.Connection, entry: _VaultFileEntry) -> 
             badge,
             l0_summary,
             alert_on_l0,
-            str(detail_path) if detail_path is not None else None,
+            safe_detail,
             updated_at,
         ),
     )
