@@ -616,7 +616,9 @@ def handle_stop(
     from mipmem.config import resolve_workspace_policy
 
     workspace_paths = _extract_workspace_paths(payload)
-    vault_dir, _, cfg, host_id, locale = _resolve_hook_runtime(vault_root, config_file)
+    vault_dir, resolved_cfg_path, cfg, host_id, locale = _resolve_hook_runtime(
+        vault_root, config_file
+    )
     policy = resolve_workspace_policy(workspace_paths, cfg)
     if policy == "disabled":
         _emit_hook_checkpoint(
@@ -753,6 +755,23 @@ def handle_stop(
         )
 
     sync_fts_index(vault_dir, locale=locale, logger=logger)
+    sync_cfg = cfg.get("sync", {}) if isinstance(cfg, dict) else {}
+    sync_backend = str(sync_cfg.get("backend") or "none").strip().lower()
+    auto_sync = bool(sync_cfg.get("auto_sync_on_stop", True))
+    detached_spawned = False
+    if sync_backend in ("git", "folder") and auto_sync:
+        try:
+            from mipmem.sync.git_backend import spawn_detached_sync
+
+            detached_spawned = spawn_detached_sync(
+                vault_dir=vault_dir,
+                config_file=resolved_cfg_path,
+                cfg=cfg,
+                logger=logger,
+            )
+        except Exception:
+            detached_spawned = False
+
     _emit_hook_checkpoint(
         logger,
         level="INFO",
@@ -762,7 +781,11 @@ def handle_stop(
         action="harvested",
         tokens_injected=0,
         duration_ms=(time.perf_counter() - started) * 1000.0,
-        details_extra={"salience_tier": sal.tier, "step_count": redacted_record.step_count},
+        details_extra={
+            "salience_tier": sal.tier,
+            "step_count": redacted_record.step_count,
+            "detached_sync_spawned": detached_spawned,
+        },
     )
     return {}
 

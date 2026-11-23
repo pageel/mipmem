@@ -6,6 +6,7 @@ locale = "en" # "en" | "vi"
 [sync]
 backend = "none" # "git" | "folder" | "none"
 vault_remote_url = "[TBD]" # e.g. git@github.com:example-user/my-mipmem-vault.git
+folder_path = "" # optional local/Syncthing directory when backend = "folder"
 auto_sync_on_stop = true
 
 [budget]

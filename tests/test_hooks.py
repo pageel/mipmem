@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from mipmem.config import default_config, save_config
 from mipmem.core.brainstorms import MAX_BRAINSTORM_BYTES
@@ -1017,6 +1019,168 @@ class TestSubAppFleetAndL0HookIntegration(unittest.TestCase):
                 logger=logger,
             )
             self.assertIn("SUBAPP_UNTRUSTED_PERMS", bad_res)
+
+    def test_stop_hook_spawns_detached_sync_only_after_harvest(self) -> None:
+        from mipmem.adapters.hook_io import handle_stop
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            vault_dir = root / "vault"
+            cfg_file = root / "config" / "config.toml"
+            active_ws = root / "ws_active"
+            disabled_ws = root / "ws_disabled"
+            active_ws.mkdir(parents=True)
+            disabled_ws.mkdir(parents=True)
+            init_vault(vault_dir, host_id="host-alpha")
+
+            cfg = default_config()
+            cfg["core"]["host_id"] = "host-alpha"
+            cfg["core"]["vault_path"] = str(vault_dir)
+            cfg["sync"]["backend"] = "git"
+            cfg["sync"]["vault_remote_url"] = str(root / "remote.git")
+            cfg["sync"]["auto_sync_on_stop"] = True
+            cfg["workspace_policies"]["disabled_paths"] = [str(disabled_ws)]
+            save_config(cfg, cfg_file)
+
+            brain_dir = root / ".gemini" / "antigravity" / "brain" / "c-sync-1"
+            t_path = brain_dir / "logs" / "transcript.jsonl"
+            t_path.parent.mkdir(parents=True)
+            events = [
+                {
+                    "timestamp": "2026-11-23T11:00:00.000Z",
+                    "type": "USER_INPUT",
+                    "text": "Wire detached stop sync worker",
+                },
+                {
+                    "timestamp": "2026-11-23T11:01:00.000Z",
+                    "type": "PLANNER_RESPONSE",
+                    "response": "Spawned detached worker cleanly.",
+                },
+            ]
+            t_path.write_text(
+                "\n".join(json.dumps(e) for e in events) + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch("subprocess.Popen") as popen_mock:
+                # 1. TERMINAL_CUSTOM_HOOK fast skip -> zero sync
+                handle_stop(
+                    {
+                        "conversationId": "c-sync-1",
+                        "terminationReason": "TERMINAL_CUSTOM_HOOK",
+                        "workspacePaths": [str(active_ws)],
+                        "transcriptPath": str(t_path),
+                    },
+                    vault_root=vault_dir,
+                    config_file=cfg_file,
+                )
+                popen_mock.assert_not_called()
+
+                # 2. Disabled workspace -> zero sync
+                handle_stop(
+                    {
+                        "conversationId": "c-sync-1",
+                        "terminationReason": "NO_TOOL_CALL",
+                        "workspacePaths": [str(disabled_ws)],
+                        "transcriptPath": str(t_path),
+                    },
+                    vault_root=vault_dir,
+                    config_file=cfg_file,
+                )
+                popen_mock.assert_not_called()
+
+                # 3. Valid active harvest -> spawns detached sync once
+                payload_ok = {
+                    "conversationId": "c-sync-1",
+                    "terminationReason": "NO_TOOL_CALL",
+                    "workspacePaths": [str(active_ws)],
+                    "transcriptPath": str(t_path),
+                }
+                res = handle_stop(payload_ok, vault_root=vault_dir, config_file=cfg_file)
+                self.assertEqual(res, {})
+                self.assertEqual(popen_mock.call_count, 1)
+                _, kwargs = popen_mock.call_args
+                self.assertTrue(kwargs.get("start_new_session"))
+                self.assertEqual(kwargs.get("stdout"), subprocess.DEVNULL)
+
+                # 4. Second Stop (idempotent skip) -> must NOT spawn again
+                handle_stop(payload_ok, vault_root=vault_dir, config_file=cfg_file)
+                self.assertEqual(popen_mock.call_count, 1)
+
+    def test_slash_mem_sync_and_help_with_folder_backend(self) -> None:
+        from mipmem.adapters.slash_mem import dispatch_slash_mem
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            vault_a = root / "vault-a"
+            vault_b = root / "vault-b"
+            shared_dir = root / "shared-sync"
+            shared_dir.mkdir()
+            cfg_a = root / "cfg-a" / "config.toml"
+            cfg_b = root / "cfg-b" / "config.toml"
+            init_vault(vault_a, host_id="host-alpha")
+            init_vault(vault_b, host_id="host-beta")
+
+            cfg_none = default_config()
+            cfg_none["core"]["host_id"] = "host-alpha"
+            cfg_none["core"]["vault_path"] = str(vault_a)
+            save_config(cfg_none, cfg_a)
+
+            help_md = dispatch_slash_mem("/mem help", vault_root=vault_a, config_file=cfg_a)
+            self.assertIn("/mem sync", help_md)
+
+            unconfigured_md = dispatch_slash_mem("/mem sync", vault_root=vault_a, config_file=cfg_a)
+            self.assertIn("SYNC_BACKEND_UNCONFIGURED", unconfigured_md)
+
+            write_session_record(
+                vault_a,
+                SessionRecord(
+                    conversation_id="conv-slash-sync-1",
+                    host_id="host-alpha",
+                    surface="ide",
+                    last_modified_time="2026-11-23T11:30:00.000Z",
+                    step_count=9,
+                    title="Slash sync verification",
+                    edited_files=["sync.py"],
+                    recent_prompts=["Test /mem sync"],
+                    last_agent_response="Done.",
+                ),
+            )
+            cfg_ok_a = default_config()
+            cfg_ok_a["core"]["host_id"] = "host-alpha"
+            cfg_ok_a["core"]["vault_path"] = str(vault_a)
+            cfg_ok_a["sync"]["backend"] = "folder"
+            cfg_ok_a["sync"]["folder_path"] = str(shared_dir)
+            save_config(cfg_ok_a, cfg_a)
+
+            cfg_ok_b = default_config()
+            cfg_ok_b["core"]["host_id"] = "host-beta"
+            cfg_ok_b["core"]["vault_path"] = str(vault_b)
+            cfg_ok_b["sync"]["backend"] = "folder"
+            cfg_ok_b["sync"]["folder_path"] = str(shared_dir)
+            save_config(cfg_ok_b, cfg_b)
+
+            with mock.patch.dict(os.environ, {"MIPMEM_CACHE_DIR": str(root / "cache-a")}):
+                push_md = dispatch_slash_mem(
+                    "/mem sync --push-only", vault_root=vault_a, config_file=cfg_a
+                )
+            self.assertIn("folder", push_md.lower())
+
+            with mock.patch.dict(os.environ, {"MIPMEM_CACHE_DIR": str(root / "cache-b")}):
+                pull_md = dispatch_slash_mem(
+                    "/mem sync --pull-only", vault_root=vault_b, config_file=cfg_b
+                )
+            self.assertIn("folder", pull_md.lower())
+            self.assertTrue(
+                (
+                    vault_b
+                    / "hosts"
+                    / "host-alpha"
+                    / "sessions"
+                    / "2026-11"
+                    / "conv-slash-sync-1.md"
+                ).is_file()
+            )
 
 
 if __name__ == "__main__":

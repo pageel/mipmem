@@ -248,6 +248,44 @@ class TestTomlCodecParity(unittest.TestCase):
                 self.assertEqual(ctx_fallback.exception.code, CONFIG_INVALID_TOML)
                 self.assertIn(expected_line, ctx_fallback.exception.message.lower())
 
+    def test_sync_folder_path_default_roundtrip_and_legacy_compat(self) -> None:
+        defaults = config.default_config()
+        self.assertIn("folder_path", defaults["sync"])
+        self.assertEqual(defaults["sync"]["folder_path"], "")
+
+        example_raw = (REPO_ROOT / "config.example.toml").read_text(encoding="utf-8")
+        parsed_example = _parse_minimal_toml(example_raw)
+        self.assertEqual(parsed_example["sync"].get("folder_path"), "")
+        if _stdlib_tomllib is not None:
+            self.assertEqual(_stdlib_tomllib.loads(example_raw)["sync"].get("folder_path"), "")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            cfg_file = base / "config.toml"
+            cache_dir = base / "cache"
+            tbd_marker = "[" + "TBD]"
+            cfg_folder = config.default_config()
+            cfg_folder["core"]["vault_path"] = str(base / "vault")
+            cfg_folder["sync"]["backend"] = "folder"
+            cfg_folder["sync"]["vault_remote_url"] = tbd_marker
+            cfg_folder["sync"]["folder_path"] = str(base / "shared_sync")
+
+            save_config(cfg_folder, cfg_file)
+            with mock.patch.dict(os.environ, {"MIPMEM_CACHE_DIR": str(cache_dir)}, clear=False):
+                loaded = load_config(cfg_file)
+            self.assertEqual(loaded["sync"]["folder_path"], str(base / "shared_sync"))
+            log_file = cache_dir / "mipmem.log"
+            if log_file.is_file():
+                self.assertNotIn('"local_only"', log_file.read_text(encoding="utf-8"))
+
+            legacy_file = base / "legacy.toml"
+            legacy_file.write_text(
+                '[core]\nhost_id = "host-alpha"\n[sync]\nbackend = "none"\n',
+                encoding="utf-8",
+            )
+            legacy_loaded = load_config(legacy_file)
+            self.assertNotIn("folder_path", legacy_loaded["sync"])
+
 
 class TestWorkspacePolicy(unittest.TestCase):
     """Verify 3-mode Workspace Policy evaluation, symlink normalization, and multi-root priority."""
