@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from mipmem.cli_commands import _build_parser
 from mipmem.config import default_config
 from mipmem.core.brainstorms import save_brainstorm_shard, update_brainstorm_status
 from mipmem.core.diagnostics import (
@@ -34,7 +35,11 @@ from mipmem.sync.base import (
     write_sync_status,
 )
 from mipmem.sync.folder_backend import FolderSyncBackend
-from mipmem.sync.git_backend import GitSyncBackend, spawn_detached_sync
+from mipmem.sync.git_backend import (
+    GitSyncBackend,
+    _build_detached_sync_argv,
+    spawn_detached_sync,
+)
 
 
 class TestSyncProtocolAndStatusStore(unittest.TestCase):
@@ -440,6 +445,156 @@ class TestDetachedStopSyncWorker(unittest.TestCase):
                     for e in entries
                 )
             )
+
+    def test_detached_sync_argv_parser_contract_and_real_git_folder_e2e(self) -> None:
+        src_root = str(Path(__file__).resolve().parents[1] / "src")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            home_dir = root / "home"
+            unused_cfg_dir = root / "unused-xdg-cfg"
+            home_dir.mkdir(parents=True)
+            unused_cfg_dir.mkdir(parents=True)
+
+            # 1. Caller <-> Parser Contract Test (MP7)
+            vault_git = root / "vault-git"
+            cache_git = root / "cache-git"
+            cfg_git = root / "custom-git" / "config.toml"
+            bare_repo = root / "bare.git"
+            cfg_git.parent.mkdir(parents=True)
+            cache_git.mkdir(parents=True)
+            init_vault(vault_git, host_id="host-detached-git")
+            session_git = (
+                vault_git / "hosts" / "host-detached-git" / "sessions" / "2026-11" / "conv-git1.md"
+            )
+            session_git.parent.mkdir(parents=True, exist_ok=True)
+            session_git.write_text("# Detached Git E2E\n", encoding="utf-8")
+
+            bare_init = subprocess.run(
+                ["git", "init", "--bare", str(bare_repo)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bare_init.returncode, 0, msg=bare_init.stderr)
+            cfg_git.write_text(
+                f'[core]\nhost_id = "host-detached-git"\n'
+                f'vault_path = "{vault_git}"\n'
+                f'locale = "en"\n'
+                f'[sync]\nbackend = "git"\n'
+                f'vault_remote_url = "{bare_repo}"\n'
+                f'auto_sync_on_stop = true\n',
+                encoding="utf-8",
+            )
+
+            argv_git, _ = _build_detached_sync_argv(vault_git, cfg_git)
+            sync_idx = argv_git.index("sync")
+            cli_tokens = argv_git[sync_idx:]
+            parsed = _build_parser().parse_args(cli_tokens)
+            self.assertEqual(parsed.command, "sync")
+            self.assertTrue(parsed.detached)
+            self.assertEqual(parsed.vault, str(vault_git))
+            self.assertEqual(parsed.config, str(cfg_git))
+            self.assertFalse(parsed.if_configured)
+
+            # 2. Real non-mocked subprocess E2E with bare Git remote & custom --config
+            base_env = {
+                key: val
+                for key, val in os.environ.items()
+                if key not in ("PYTHONPATH", "MIPMEM_VAULT_DIR") and not key.startswith("XDG_")
+            }
+            base_env.update(
+                {
+                    "PYTHONPATH": src_root,
+                    "HOME": str(home_dir),
+                    "MIPMEM_CONFIG_DIR": str(unused_cfg_dir),
+                    "MIPMEM_CACHE_DIR": str(cache_git),
+                }
+            )
+            proc_git = subprocess.run(
+                argv_git,
+                env=base_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                proc_git.returncode,
+                0,
+                msg=f"stdout={proc_git.stdout}\nstderr={proc_git.stderr}",
+            )
+            ls_tree = subprocess.run(
+                ["git", "--git-dir", str(bare_repo), "ls-tree", "-r", "--name-only", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(ls_tree.returncode, 0, msg=ls_tree.stderr)
+            self.assertIn(
+                "hosts/host-detached-git/sessions/2026-11/conv-git1.md",
+                ls_tree.stdout,
+            )
+            status_git = read_sync_status(cache_git)
+            assert status_git is not None
+            self.assertTrue(status_git["ok"])
+            self.assertEqual(status_git["backend"], "git")
+            self.assertEqual(status_git["host_id"], "host-detached-git")
+
+            # 3. Real non-mocked subprocess E2E with Folder backend & custom --config
+            vault_folder = root / "vault-folder"
+            cache_folder = root / "cache-folder"
+            shared_dir = root / "shared-folder"
+            cfg_folder = root / "custom-folder" / "config.toml"
+            cache_folder.mkdir(parents=True)
+            shared_dir.mkdir(parents=True)
+            cfg_folder.parent.mkdir(parents=True)
+            init_vault(vault_folder, host_id="host-detached-folder")
+            session_folder = (
+                vault_folder
+                / "hosts"
+                / "host-detached-folder"
+                / "sessions"
+                / "2026-11"
+                / "conv-fld1.md"
+            )
+            session_folder.parent.mkdir(parents=True, exist_ok=True)
+            session_folder.write_text("# Detached Folder E2E\n", encoding="utf-8")
+            cfg_folder.write_text(
+                f'[core]\nhost_id = "host-detached-folder"\n'
+                f'vault_path = "{vault_folder}"\n'
+                f'locale = "vi"\n'
+                f'[sync]\nbackend = "folder"\n'
+                f'folder_path = "{shared_dir}"\n',
+                encoding="utf-8",
+            )
+            argv_folder, _ = _build_detached_sync_argv(vault_folder, cfg_folder)
+            env_folder = {**base_env, "MIPMEM_CACHE_DIR": str(cache_folder)}
+            proc_folder = subprocess.run(
+                argv_folder,
+                env=env_folder,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                proc_folder.returncode,
+                0,
+                msg=f"stdout={proc_folder.stdout}\nstderr={proc_folder.stderr}",
+            )
+            self.assertTrue(
+                (
+                    shared_dir
+                    / "hosts"
+                    / "host-detached-folder"
+                    / "sessions"
+                    / "2026-11"
+                    / "conv-fld1.md"
+                ).is_file()
+            )
+            status_folder = read_sync_status(cache_folder)
+            assert status_folder is not None
+            self.assertTrue(status_folder["ok"])
+            self.assertEqual(status_folder["backend"], "folder")
+            self.assertEqual(status_folder["host_id"], "host-detached-folder")
 
 
 class TestFolderSyncBackend(unittest.TestCase):
