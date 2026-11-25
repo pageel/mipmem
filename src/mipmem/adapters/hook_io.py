@@ -296,9 +296,11 @@ def handle_session_start(
         return {}
 
     from mipmem.adapters.slash_mem import load_recent_sessions
+    from mipmem.config import resolve_paths
     from mipmem.core.brainstorms import BrainstormShard, load_brainstorm_shard
     from mipmem.core.fts_recall import list_indexed_brainstorms, sync_fts_index
     from mipmem.core.mipmap import render_l0_radar
+    from mipmem.core.subapps import load_subapp_telemetry, read_sync_alert
     from mipmem.core.workstreams import thread_workstreams
 
     sync_fts_index(vault_dir, locale=locale, logger=logger)
@@ -314,6 +316,9 @@ def handle_session_start(
         except Exception:
             continue
 
+    telemetry = load_subapp_telemetry(vault_dir, logger=logger)
+    sync_alert = read_sync_alert(resolve_paths(configured_vault_dir=vault_dir).cache_dir)
+
     l0 = render_l0_radar(
         sessions=sessions,
         brainstorms=shards,
@@ -321,6 +326,8 @@ def handle_session_start(
         config=cfg,
         locale=locale,
         logger=logger,
+        subapp_telemetry=telemetry,
+        sync_alert=sync_alert,
     )
     _emit_hook_checkpoint(
         logger,
@@ -609,7 +616,9 @@ def handle_stop(
     from mipmem.config import resolve_workspace_policy
 
     workspace_paths = _extract_workspace_paths(payload)
-    vault_dir, _, cfg, host_id, locale = _resolve_hook_runtime(vault_root, config_file)
+    vault_dir, resolved_cfg_path, cfg, host_id, locale = _resolve_hook_runtime(
+        vault_root, config_file
+    )
     policy = resolve_workspace_policy(workspace_paths, cfg)
     if policy == "disabled":
         _emit_hook_checkpoint(
@@ -746,6 +755,23 @@ def handle_stop(
         )
 
     sync_fts_index(vault_dir, locale=locale, logger=logger)
+    sync_cfg = cfg.get("sync", {}) if isinstance(cfg, dict) else {}
+    sync_backend = str(sync_cfg.get("backend") or "none").strip().lower()
+    auto_sync = bool(sync_cfg.get("auto_sync_on_stop", True))
+    detached_spawned = False
+    if sync_backend in ("git", "folder") and auto_sync:
+        try:
+            from mipmem.sync.git_backend import spawn_detached_sync
+
+            detached_spawned = spawn_detached_sync(
+                vault_dir=vault_dir,
+                config_file=resolved_cfg_path,
+                cfg=cfg,
+                logger=logger,
+            )
+        except Exception:
+            detached_spawned = False
+
     _emit_hook_checkpoint(
         logger,
         level="INFO",
@@ -755,7 +781,11 @@ def handle_stop(
         action="harvested",
         tokens_injected=0,
         duration_ms=(time.perf_counter() - started) * 1000.0,
-        details_extra={"salience_tier": sal.tier, "step_count": redacted_record.step_count},
+        details_extra={
+            "salience_tier": sal.tier,
+            "step_count": redacted_record.step_count,
+            "detached_sync_spawned": detached_spawned,
+        },
     )
     return {}
 

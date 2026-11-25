@@ -40,6 +40,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "sync": {
         "backend": "none",
         "vault_remote_url": _TBD_MARKER,
+        "folder_path": "",
         "auto_sync_on_stop": True,
     },
     "budget": {
@@ -570,9 +571,19 @@ def load_config(
 
     sync_section = parsed.get("sync", {})
     if isinstance(sync_section, dict):
-        remote_url = sync_section.get("vault_remote_url", _TBD_MARKER)
-        backend = sync_section.get("backend", "none")
-        if remote_url == _TBD_MARKER or backend == "none":
+        remote_url = str(sync_section.get("vault_remote_url", _TBD_MARKER) or "").strip()
+        folder_path = str(sync_section.get("folder_path", "") or "").strip()
+        backend = str(sync_section.get("backend", "none") or "none").strip().lower()
+        is_local_only = (
+            backend == "none"
+            or (backend == "git" and (not remote_url or remote_url == _TBD_MARKER))
+            or (
+                backend == "folder"
+                and not folder_path
+                and (not remote_url or remote_url == _TBD_MARKER)
+            )
+        )
+        if is_local_only:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             active_logger = logger if logger is not None else RotatingJsonLogger()
             active_logger.log_event(

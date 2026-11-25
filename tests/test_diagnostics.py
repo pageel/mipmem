@@ -24,6 +24,9 @@ from mipmem.core.diagnostics import (
     CP_IDX_01,
     CP_MCP_01,
     CP_MIP_01,
+    CP_SUB_01,
+    CP_SYN_01,
+    CP_UPD_01,
     FTS_INDEX_CORRUPT,
     FTS_UNAVAILABLE,
     HOOK_INVALID_PAYLOAD,
@@ -35,8 +38,16 @@ from mipmem.core.diagnostics import (
     PLUGIN_MANIFEST_INVALID,
     S2_ERROR_CODES,
     S3_ERROR_CODES,
+    S4_ERROR_CODES,
     SLASH_COMMAND_INVALID,
     SPEC_ERROR_CODES,
+    SUBAPP_EXEC_FAILED,
+    SUBAPP_EXEC_TIMEOUT,
+    SUBAPP_UNTRUSTED_PERMS,
+    SYNC_BACKEND_UNCONFIGURED,
+    SYNC_CONFLICT_DETECTED,
+    SYNC_TRANSPORT_FAILED,
+    UPDATE_VERIFICATION_FAILED,
     MipmemError,
     RotatingJsonLogger,
     register_default_scrubber,
@@ -166,7 +177,7 @@ class TestDiagnostics(unittest.TestCase):
                 INVALID_BRAINSTORM_STATUS,
             ),
         )
-        self.assertEqual(len(ALL_ERROR_CODES), 18)
+        self.assertEqual(len(ALL_ERROR_CODES), 25)
         self.assertEqual((CP_IDX_01, CP_FTS_01, CP_MIP_01), ("CP-IDX-01", "CP-FTS-01", "CP-MIP-01"))
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_file = Path(tmp_dir) / "mipmem.log"
@@ -192,7 +203,7 @@ class TestDiagnostics(unittest.TestCase):
             ),
         )
         self.assertEqual(len(S3_ERROR_CODES), 7)
-        self.assertEqual(len(set(ALL_ERROR_CODES)), 18)
+        self.assertEqual(len(set(ALL_ERROR_CODES)), 25)
         self.assertEqual((CP_HK_01, CP_ADP_01, CP_MCP_01), ("CP-HK-01", "CP-ADP-01", "CP-MCP-01"))
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_file = Path(tmp_dir) / "mipmem.log"
@@ -203,6 +214,37 @@ class TestDiagnostics(unittest.TestCase):
             self.assertEqual(len(lines), 3)
             events = [json.loads(line)["event"] for line in lines]
             self.assertEqual(events, ["CP-HK-01", "CP-ADP-01", "CP-MCP-01"])
+
+    def test_s4_error_codes_and_checkpoints(self) -> None:
+        self.assertEqual(
+            S4_ERROR_CODES,
+            (
+                SUBAPP_UNTRUSTED_PERMS,
+                SUBAPP_EXEC_TIMEOUT,
+                SUBAPP_EXEC_FAILED,
+                SYNC_BACKEND_UNCONFIGURED,
+                SYNC_CONFLICT_DETECTED,
+                SYNC_TRANSPORT_FAILED,
+                UPDATE_VERIFICATION_FAILED,
+            ),
+        )
+        self.assertEqual(len(S4_ERROR_CODES), 7)
+        self.assertEqual(len(ALL_ERROR_CODES), 25)
+        self.assertEqual(len(set(ALL_ERROR_CODES)), 25)
+        self.assertEqual((CP_SUB_01, CP_SYN_01, CP_UPD_01), ("CP-SUB-01", "CP-SYN-01", "CP-UPD-01"))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_file = Path(tmp_dir) / "mipmem.log"
+            logger = RotatingJsonLogger(log_path=log_file)
+            for cp, comp in (
+                (CP_SUB_01, "subapps"),
+                (CP_SYN_01, "sync"),
+                (CP_UPD_01, "updater"),
+            ):
+                logger.log_event("INFO", comp, cp, details={"ok": True})
+            lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 3)
+            events = [json.loads(line)["event"] for line in lines]
+            self.assertEqual(events, ["CP-SUB-01", "CP-SYN-01", "CP-UPD-01"])
 
 
 if __name__ == "__main__":

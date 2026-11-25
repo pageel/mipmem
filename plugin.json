@@ -1,7 +1,7 @@
 {
   "name": "mipmem",
   "displayName": "MipMem Cognitive Memory",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Zero-dependency, zero-LLM-token 4-layer mipmapped cognitive memory engine, lossless brainstorm vault, and local stdio MCP server for Antigravity CLI and IDE.",
   "author": {
     "name": "pageel",

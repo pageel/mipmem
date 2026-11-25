@@ -230,6 +230,9 @@ def _render_help() -> str:
             "| `/mem bs status <id> <status>` | Update brainstorm status via host journal |",
             "| `/mem config [show \\| get <k> \\| set <k> <v>]` | View or update config.toml |",
             "| `/mem handoff [@<host_id>]` | Show latest Primary Work Anchor handoff |",
+            "| `/mem fleet` | Show multi-host vault, sub-apps, and sync status |",
+            "| `/mem sync [--pull-only \\| --push-only]` | Sync vault via git or folder backend |",
+            "| `/mem <app> [args...]` | Run a local trusted sub-app from `apps.d` |",
         ]
     )
 
@@ -615,6 +618,91 @@ def _cmd_handoff(tokens: list[str], vault_dir: Path, default_host: str, locale: 
     return read_host_handoff(vault_dir, safe_host, locale=locale)
 
 
+def _cmd_fleet(
+    vault_dir: Path,
+    default_host: str,
+    surface: str,
+    logger: Optional[RotatingJsonLogger],
+) -> str:
+    """Handle `/mem fleet` showing multi-host inventory, sub-apps telemetry, and sync status."""
+    if not is_vault_initialized(vault_dir):
+        return f"Vault is not initialized at `{vault_dir}`."
+    from mipmem.core.subapps import build_fleet_status, format_fleet_markdown
+
+    paths = resolve_paths(configured_vault_dir=vault_dir)
+    fleet = build_fleet_status(
+        vault_dir,
+        active_host_id=default_host,
+        cache_dir=paths.cache_dir,
+        logger=logger,
+    )
+    return format_fleet_markdown(fleet, surface=surface)
+
+
+def _cmd_sync(
+    tokens: list[str],
+    vault_dir: Path,
+    cfg: dict[str, Any],
+    default_host: str,
+    locale: str,
+    logger: Optional[RotatingJsonLogger],
+) -> str:
+    """Handle `/mem sync [--pull-only|--push-only]` using the configured sync backend."""
+    mode = "sync"
+    if len(tokens) == 1:
+        flag = tokens[0].strip().lower()
+        if flag == "--pull-only":
+            mode = "pull"
+        elif flag == "--push-only":
+            mode = "push"
+        else:
+            raise MipmemError(
+                SLASH_COMMAND_INVALID,
+                "Usage: `/mem sync [--pull-only | --push-only]`",
+            )
+    elif len(tokens) > 1:
+        raise MipmemError(
+            SLASH_COMMAND_INVALID,
+            "Usage: `/mem sync [--pull-only | --push-only]`",
+        )
+
+    from mipmem.sync.base import resolve_sync_backend
+
+    paths = resolve_paths(configured_vault_dir=vault_dir)
+    backend = resolve_sync_backend(
+        cfg,
+        vault_dir=vault_dir,
+        cache_dir=paths.cache_dir,
+        host_id=default_host,
+        locale=locale,
+        logger=logger,
+    )
+    if mode == "pull":
+        result = backend.pull()
+    elif mode == "push":
+        result = backend.push()
+    else:
+        result = backend.sync()
+
+    state = (
+        "conflict"
+        if result.conflict
+        else ("ok" if result.ok else (result.error_code or "fail"))
+    )
+    lines = [
+        "### MipMem Vault Sync",
+        "",
+        "| Field | Value |",
+        "| :--- | :--- |",
+        f"| Backend | `{result.backend}` (`{result.direction}`) |",
+        f"| Host | `{result.host_id}` |",
+        f"| Status | `{state}` |",
+        f"| Files Changed | `{result.files_changed}` |",
+        f"| Summary | {_gfm_cell(result.message or state, max_len=90)} |",
+    ]
+    return "\n".join(lines)
+
+
 # @para-doc [#csa-hook-slash-mem-dispatcher]
 def dispatch_slash_mem(
     raw_command: str,
@@ -665,6 +753,21 @@ def dispatch_slash_mem(
             return _cmd_config(args, cfg_path, cfg)
         if subcmd == "handoff":
             return _cmd_handoff(args, vault_dir, active_host, active_locale)
+        if subcmd == "fleet":
+            return _cmd_fleet(vault_dir, active_host, surface, logger)
+        if subcmd == "sync":
+            return _cmd_sync(args, vault_dir, cfg, active_host, active_locale, logger)
+
+        from mipmem.core.subapps import has_app_delegate_candidate, run_app_delegate
+
+        if has_app_delegate_candidate(cfg_path.parent, subcmd):
+            return run_app_delegate(
+                subcmd,
+                args,
+                config_dir=cfg_path.parent,
+                vault_root=vault_dir,
+                logger=logger,
+            )
 
         raise MipmemError(
             SLASH_COMMAND_INVALID,
@@ -675,12 +778,17 @@ def dispatch_slash_mem(
             raise
         err_code = str(getattr(exc, "code", SLASH_COMMAND_INVALID))
         err_msg = str(getattr(exc, "message", str(exc)))
+        logged_code = (
+            err_code
+            if err_code.startswith(("SUBAPP_", "SYNC_"))
+            else SLASH_COMMAND_INVALID
+        )
         if logger is not None:
             logger.log_event(
                 "INFO",
                 "slash_mem",
                 CP_HK_01,
-                error_code=SLASH_COMMAND_INVALID if err_code != SLASH_COMMAND_INVALID else err_code,
+                error_code=logged_code,
                 details={"subcmd": subcmd, "surface": surface, "source_code": err_code},
             )
         return f"**Invalid `/mem` command (`{err_code}`):** {err_msg}"

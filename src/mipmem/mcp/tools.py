@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Optional, Union
 
 from mipmem.adapters.slash_mem import (
     _resolve_runtime_context,
-    load_recent_sessions,
     read_host_handoff,
     read_safe_text_file,
 )
@@ -376,64 +374,17 @@ class McpToolRegistry:
 
     def _tool_mem_fleet_status(self, args: dict[str, Any]) -> dict[str, Any]:
         _ = args
+        from mipmem.config import resolve_paths
+        from mipmem.core.subapps import build_fleet_status
+
         vault_dir, active_host, _ = self._runtime()
-        initialized = is_vault_initialized(vault_dir)
-        if not initialized:
-            return {
-                "vault_dir": str(vault_dir),
-                "vault_initialized": False,
-                "active_host_id": active_host,
-                "hosts": [],
-                "total_sessions": 0,
-                "total_brainstorms": 0,
-                "subapp_telemetry": [],
-            }
-
-        hosts_dir = vault_dir / "hosts"
-        indexed_bs = list_indexed_brainstorms(vault_dir, auto_sync=True, logger=self._logger)
-        bs_by_host: dict[str, int] = {}
-        for item in indexed_bs:
-            origin = str(item.get("origin_host", ""))
-            bs_by_host[origin] = bs_by_host.get(origin, 0) + 1
-
-        hosts_summary: list[dict[str, Any]] = []
-        total_sessions = 0
-        if hosts_dir.is_dir():
-            for host_dir in sorted(hosts_dir.iterdir()):
-                if not host_dir.is_dir() or host_dir.is_symlink():
-                    continue
-                h_id = host_dir.name
-                meta_info: dict[str, Any] = {}
-                meta_file = host_dir / "host_meta.json"
-                if meta_file.is_file() and not meta_file.is_symlink():
-                    try:
-                        parsed = json.loads(meta_file.read_text(encoding="utf-8"))
-                        if isinstance(parsed, dict):
-                            meta_info = parsed
-                    except (OSError, json.JSONDecodeError):
-                        meta_info = {}
-                sess_count = len(load_recent_sessions(vault_dir, host_id=h_id, limit=2000))
-                total_sessions += sess_count
-                handoff_exists = (host_dir / "latest_handoff.md").is_file()
-                hosts_summary.append(
-                    {
-                        "host_id": h_id,
-                        "sessions_count": sess_count,
-                        "brainstorms_count": bs_by_host.get(h_id, 0),
-                        "has_latest_handoff": handoff_exists,
-                        "meta": meta_info,
-                    }
-                )
-
-        return {
-            "vault_dir": str(vault_dir),
-            "vault_initialized": True,
-            "active_host_id": active_host,
-            "hosts": hosts_summary,
-            "total_sessions": total_sessions,
-            "total_brainstorms": len(indexed_bs),
-            "subapp_telemetry": [],
-        }
+        paths = resolve_paths(configured_vault_dir=vault_dir)
+        return build_fleet_status(
+            vault_dir,
+            active_host_id=active_host,
+            cache_dir=paths.cache_dir,
+            logger=self._logger,
+        )
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Dispatch one validated MCP tool call by name."""

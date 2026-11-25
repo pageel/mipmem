@@ -1,0 +1,124 @@
+name: Release Dual-Channel (GitHub + PyPI OIDC)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-audit:
+    name: Build Artifacts & Full Clean-Room Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Verify release tag matches package version
+        run: >
+          PYTHONPATH=src python3 -c
+          "import os, sys; import mipmem;
+          tag = os.environ['GITHUB_REF_NAME'];
+          expected = 'v' + mipmem.__version__;
+          assert tag == expected, f'Tag {tag} != {expected}';
+          print('TAG_VERSION_OK:', tag)"
+
+      - name: Verify deterministic zipapp bundle
+        run: |
+          BEFORE_SHA=$(sha256sum bin/mipmem.pyz | awk '{print $1}')
+          python3 scripts/build_pyz.py
+          AFTER_SHA=$(sha256sum bin/mipmem.pyz | awk '{print $1}')
+          test "$BEFORE_SHA" = "$AFTER_SHA"
+          git -c core.filemode=false diff --exit-code bin/mipmem.pyz
+
+      - name: Build Python sdist and wheel
+        run: |
+          python3 -m pip install --no-cache-dir build
+          rm -rf dist
+          python3 -m build --outdir dist
+
+      - name: Stage zipapp and generate SHA256SUMS
+        run: |
+          cp bin/mipmem.pyz dist/mipmem.pyz
+          chmod +x dist/mipmem.pyz
+          (cd dist && sha256sum mipmem.pyz *.whl *.tar.gz > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Run Clean-Room full Git history and dist audit
+        run: python3 scripts/check_cleanroom.py --git-history --dist-dir dist
+
+      - name: Run Dual-Channel release readiness audit
+        run: python3 scripts/verify_release.py . --dist-dir dist
+
+      - name: Run zero-dependency unittest suite
+        run: PYTHONPATH=src:. python3 -m unittest discover -s tests -v
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-github-release:
+    name: Publish GitHub Release & Build Provenance
+    needs: [build-and-audit]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Generate build provenance attestation for mipmem.pyz
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/mipmem.pyz
+
+      - name: Create GitHub Release with signed checksums
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/mipmem.pyz
+            dist/SHA256SUMS
+            dist/*.whl
+            dist/*.tar.gz
+
+  publish-pypi:
+    name: Publish Package to PyPI via OIDC Trusted Publishing
+    needs: [build-and-audit]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mipmem
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Keep only sdist and wheel for PyPI upload
+        run: rm -f dist/mipmem.pyz dist/SHA256SUMS
+
+      - name: Publish to PyPI with PEP 740 attestations
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          attestations: true
