@@ -7,6 +7,19 @@ All notable changes to `mipmem` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-11-25
+
+### Fixed
+
+- Added `--config <path>` support to `mipmem sync` in `src/mipmem/cli_commands.py` and propagated custom configuration overrides through `_resolve_active_paths()` and `_resolve_host_and_locale()`, resolving the detached `Stop`-hook background sync failure (`unrecognized arguments: --config ...`) and returning `CLI_INVALID_ARGUMENT` when a custom `--config` path is missing or a symlink.
+- Added redacted `CP-SYN-01` error logging (`direction: "detached_cli"`) in `dispatch_full_cli()` (`_log_detached_cli_error()`) so `--detached` background worker failures prior to `backend.sync()` are persisted to `<cache_dir>/mipmem.log` instead of failing silently under `DEVNULL`.
+
+### Added
+
+- Added `--if-configured` flag to `mipmem sync` returning exit code `0` (`skipped: true`) when the vault is uninitialized or `[sync].backend = "none"`, enabling safe shell wrappers and automation hooks.
+- Added caller-parser contract verification (`_build_detached_sync_argv()` against `_build_parser().parse_args()`) and non-mocked `subprocess` E2E tests for bare Git and Folder detached sync (`tests/test_sync.py`, `tests/test_cli.py`).
+- Documented the portable Linux Bash/Zsh `agy()` exit-flush wrapper (`timeout --signal=INT 20`, `--if-configured`, exit-code preservation, and `auto_sync_on_stop = true` vs `false` modes) in `README.md` and `README.vi.md`.
+
 ## [1.0.0] - 2026-11-25
 
 ### Added

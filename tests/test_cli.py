@@ -10,16 +10,19 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
 from mipmem.cli import main as cli_main
+from mipmem.cli_commands import dispatch_full_cli
 from mipmem.config import load_config
 from mipmem.core.diagnostics import (
     BRAINSTORM_NOT_FOUND,
     CLI_INVALID_ARGUMENT,
     CONFIG_INVALID_HOST_ID,
     CONFIG_INVALID_TOML,
+    CP_SYN_01,
     INVALID_BRAINSTORM_STATUS,
     INVALID_SLICE_SELECTOR,
     MIGRATE_SOURCE_MISSING,
@@ -29,6 +32,8 @@ from mipmem.core.diagnostics import (
     register_default_scrubber,
 )
 from mipmem.core.updater import UpdateResult
+from mipmem.core.vault import init_vault
+from mipmem.sync.base import read_sync_status
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -693,6 +698,181 @@ class TestCliDispatcher(unittest.TestCase):
             self.assertTrue(upd_data["success"])
             self.assertEqual(upd_data["result"]["target_version"], "1.0.0")
             self.assertTrue(upd_data["result"]["update_available"])
+
+    def test_sync_config_override_if_configured_and_missing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            home_dir = root / "home"
+            default_cfg_dir = root / "default-cfg"
+            default_vault = root / "default-vault"
+            default_cache = root / "default-cache"
+            custom_vault = root / "custom-vault"
+            sync_dir = root / "shared-sync"
+            custom_cfg = root / "outside" / "custom-sync.toml"
+
+            home_dir.mkdir(parents=True)
+            default_cfg_dir.mkdir(parents=True)
+            default_cache.mkdir(parents=True)
+            custom_cfg.parent.mkdir(parents=True)
+            sync_dir.mkdir(parents=True)
+            init_vault(default_vault, host_id="host-default")
+            init_vault(custom_vault, host_id="host-custom")
+            (default_cfg_dir / "config.toml").write_text(
+                f'[core]\nhost_id = "host-default"\nvault_path = "{default_vault}"\nlocale = "en"\n'
+                '[sync]\nbackend = "none"\n',
+                encoding="utf-8",
+            )
+
+            env_clean = {
+                key: val
+                for key, val in os.environ.items()
+                if not key.startswith("XDG_") and key != "MIPMEM_VAULT_DIR"
+            }
+            env_clean.update(
+                {
+                    "HOME": str(home_dir),
+                    "MIPMEM_CONFIG_DIR": str(default_cfg_dir),
+                    "MIPMEM_CACHE_DIR": str(default_cache),
+                }
+            )
+
+            with mock.patch.dict(os.environ, env_clean, clear=True):
+                # 1. --if-configured exits 0 cleanly when [sync].backend == "none"
+                rc_skip, out_skip, err_skip = _run_cli(
+                    ["sync", "--if-configured", "--json"],
+                    {},
+                )
+                self.assertEqual(rc_skip, 0, msg=out_skip + err_skip)
+                self.assertEqual(err_skip, "")
+                skip_data = json.loads(out_skip)
+                self.assertTrue(skip_data["success"])
+                self.assertTrue(skip_data["skipped"])
+                self.assertEqual(skip_data["reason"], "sync_unconfigured")
+
+                # 2. Missing --config file fails explicitly with CLI_INVALID_ARGUMENT
+                missing_cfg = root / "outside" / "missing.toml"
+                rc_miss, out_miss, _ = _run_cli(
+                    ["sync", "--config", str(missing_cfg), "--json"],
+                    {},
+                )
+                self.assertNotEqual(rc_miss, 0)
+                self.assertEqual(json.loads(out_miss)["error"]["code"], CLI_INVALID_ARGUMENT)
+
+                # 3. Valid custom --config resolves custom vault_path, host_id, and sync backend
+                session_file = (
+                    custom_vault / "hosts" / "host-custom" / "sessions" / "2026-11" / "conv-c1.md"
+                )
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                session_file.write_text("# Custom session\n", encoding="utf-8")
+                custom_cfg.write_text(
+                    f'[core]\nhost_id = "host-custom"\n'
+                    f'vault_path = "{custom_vault}"\n'
+                    f'locale = "vi"\n'
+                    f'[sync]\nbackend = "folder"\n'
+                    f'folder_path = "{sync_dir}"\n',
+                    encoding="utf-8",
+                )
+                rc_cust, out_cust, err_cust = _run_cli(
+                    ["sync", "--config", str(custom_cfg), "--json"],
+                    {},
+                )
+                self.assertEqual(rc_cust, 0, msg=out_cust + err_cust)
+                self.assertEqual(err_cust, "")
+                cust_data = json.loads(out_cust)
+                self.assertTrue(cust_data["success"])
+                self.assertEqual(cust_data["result"]["host_id"], "host-custom")
+                self.assertTrue(
+                    (
+                        sync_dir
+                        / "hosts"
+                        / "host-custom"
+                        / "sessions"
+                        / "2026-11"
+                        / "conv-c1.md"
+                    ).is_file()
+                )
+                cached = read_sync_status(default_cache)
+                assert cached is not None
+                self.assertEqual(cached["host_id"], "host-custom")
+
+    def test_detached_cli_errors_log_cp_syn_01_to_mipmem_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            cfg_dir = root / "cfg"
+            vault_dir = root / "vault"
+            cache_dir = root / "cache"
+            sync_dir = root / "sync"
+            cfg_dir.mkdir(parents=True)
+            cache_dir.mkdir(parents=True)
+            sync_dir.mkdir(parents=True)
+            init_vault(vault_dir, host_id="host-det")
+            (cfg_dir / "config.toml").write_text(
+                f'[core]\nhost_id = "host-det"\nvault_path = "{vault_dir}"\n'
+                f'[sync]\nbackend = "folder"\nfolder_path = "{sync_dir}"\n',
+                encoding="utf-8",
+            )
+
+            sub_env = {
+                key: val
+                for key, val in os.environ.items()
+                if key not in ("PYTHONPATH", "MIPMEM_VAULT_DIR") and not key.startswith("XDG_")
+            }
+            sub_env.update(
+                {
+                    "PYTHONPATH": str(REPO_ROOT / "src"),
+                    "HOME": str(root / "home"),
+                    "MIPMEM_CONFIG_DIR": str(cfg_dir),
+                    "MIPMEM_CACHE_DIR": str(cache_dir),
+                }
+            )
+
+            # 1. Argparse error in --detached subprocess MUST log CP-SYN-01 to mipmem.log
+            proc = subprocess.run(
+                [sys.executable, "-m", "mipmem", "sync", "--detached", "--unknown-flag"],
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1)
+            log_path = cache_dir / "mipmem.log"
+            self.assertTrue(log_path.is_file(), msg="mipmem.log was not created for detached error")
+            raw_lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+            entries = [json.loads(line) for line in raw_lines]
+            self.assertTrue(
+                any(
+                    e["event"] == CP_SYN_01
+                    and e["level"] == "ERROR"
+                    and e["error_code"] == CLI_INVALID_ARGUMENT
+                    and e.get("details", {}).get("direction") == "detached_cli"
+                    and e.get("details", {}).get("ok") is False
+                    for e in entries
+                ),
+                msg=f"Missing detached_cli error record: {entries}",
+            )
+
+            # 2. Unexpected RuntimeError during --detached logs redacted event & returns 1
+            fake_secret = "ghp_" + "R" * 24
+            with (
+                mock.patch.dict(os.environ, sub_env, clear=True),
+                mock.patch(
+                    "mipmem.sync.base.resolve_sync_backend",
+                    side_effect=RuntimeError(f"unexpected boom token={fake_secret}"),
+                ),
+            ):
+                rc_unexpected = dispatch_full_cli(["sync", "--detached"], time.perf_counter())
+            self.assertEqual(rc_unexpected, 1)
+            raw_log = log_path.read_text(encoding="utf-8")
+            self.assertNotIn(fake_secret, raw_log)
+            entries_after = [json.loads(line) for line in raw_log.strip().splitlines()]
+            self.assertTrue(
+                any(
+                    e["event"] == CP_SYN_01
+                    and e.get("details", {}).get("exception") == "RuntimeError"
+                    and e.get("details", {}).get("ok") is False
+                    for e in entries_after
+                )
+            )
 
 
 if __name__ == "__main__":

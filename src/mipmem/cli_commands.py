@@ -16,27 +16,44 @@ def _emit_json(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def _resolve_active_paths(vault_override: str | None = None) -> Any:
-    """Resolve XDG/env paths lazily using CLI --vault, env, or config.toml."""
+def _resolve_active_paths(
+    vault_override: str | None = None,
+    config_override: str | Path | None = None,
+) -> Any:
+    """Resolve XDG/env paths lazily using CLI --config, --vault, env, or config.toml."""
     from dataclasses import replace
 
     from mipmem.config import load_config, resolve_paths
+    from mipmem.core.diagnostics import CLI_INVALID_ARGUMENT, MipmemError
+
+    base_paths = resolve_paths()
+    if config_override is not None:
+        raw_cfg = str(config_override).strip()
+        if not raw_cfg:
+            raise MipmemError(CLI_INVALID_ARGUMENT, "Option --config requires a file path.")
+        cfg_path = Path(raw_cfg).expanduser()
+        if cfg_path.is_symlink() or not cfg_path.is_file():
+            raise MipmemError(
+                CLI_INVALID_ARGUMENT,
+                f"Config file not found: {config_override!r}.",
+            )
+    else:
+        cfg_path = base_paths.config_file
 
     if vault_override is not None:
-        base_paths = resolve_paths()
-        return replace(base_paths, vault_dir=Path(vault_override).expanduser())
-
-    configured_vault: str | None = None
-    if not os.environ.get("MIPMEM_VAULT_DIR", "").strip():
-        probe_paths = resolve_paths()
-        if probe_paths.config_file.is_file():
-            cfg = load_config(probe_paths.config_file)
+        resolved = replace(base_paths, vault_dir=Path(vault_override).expanduser())
+    else:
+        configured_vault: str | None = None
+        if not os.environ.get("MIPMEM_VAULT_DIR", "").strip() and cfg_path.is_file():
+            cfg = load_config(cfg_path)
             core_tbl = cfg.get("core", {})
             if isinstance(core_tbl, dict):
                 raw_vault = core_tbl.get("vault_path")
                 if isinstance(raw_vault, str) and raw_vault.strip():
                     configured_vault = raw_vault.strip()
-    return resolve_paths(configured_vault_dir=configured_vault)
+        resolved = resolve_paths(configured_vault_dir=configured_vault)
+
+    return replace(resolved, config_file=cfg_path)
 
 
 def _coerce_config_value(
@@ -368,12 +385,16 @@ def _resolve_host_and_locale(
     paths: Any,
     explicit_host: str | None,
     explicit_locale: str | None,
+    cfg_override: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Resolve active host_id and locale from CLI flags, config.toml, or defaults."""
     from mipmem.config import load_config
     from mipmem.core.vault import default_host_id
 
-    cfg: dict[str, Any] = load_config(paths.config_file) if paths.config_file.is_file() else {}
+    if cfg_override is not None:
+        cfg: dict[str, Any] = cfg_override
+    else:
+        cfg = load_config(paths.config_file) if paths.config_file.is_file() else {}
     core_tbl = cfg.get("core", {}) if isinstance(cfg, dict) else {}
 
     host_id = explicit_host
@@ -619,21 +640,50 @@ def _handle_sync(args: argparse.Namespace, json_mode: bool) -> int:
     """Execute pull, push, or full conflict-free vault synchronization."""
     from mipmem.config import default_config, load_config
     from mipmem.core.diagnostics import CLI_INVALID_ARGUMENT, MipmemError, RotatingJsonLogger
-    from mipmem.sync.base import resolve_sync_backend
+    from mipmem.sync.base import is_sync_configured, resolve_sync_backend
 
     pull_only = bool(getattr(args, "pull_only", False))
     push_only = bool(getattr(args, "push_only", False))
     detached = bool(getattr(args, "detached", False))
+    if_configured = bool(getattr(args, "if_configured", False))
     if pull_only and push_only:
         raise MipmemError(
             CLI_INVALID_ARGUMENT,
             "Options --pull-only and --push-only are mutually exclusive.",
         )
 
-    paths = _resolve_active_paths(getattr(args, "vault", None))
-    _require_initialized_vault(paths.vault_dir)
+    paths = _resolve_active_paths(
+        getattr(args, "vault", None),
+        config_override=getattr(args, "config", None),
+    )
     cfg = load_config(paths.config_file) if paths.config_file.is_file() else default_config()
-    host_id, locale = _resolve_host_and_locale(paths, getattr(args, "host", None), None)
+    if if_configured:
+        configured, backend_name, _ = is_sync_configured(cfg)
+        if not configured:
+            if detached:
+                return 0
+            if json_mode:
+                _emit_json(
+                    {
+                        "success": True,
+                        "skipped": True,
+                        "reason": "sync_unconfigured",
+                        "backend": backend_name,
+                    }
+                )
+            else:
+                sys.stdout.write(
+                    f"Sync skipped: backend {backend_name!r} is not configured.\n"
+                )
+            return 0
+
+    _require_initialized_vault(paths.vault_dir)
+    host_id, locale = _resolve_host_and_locale(
+        paths,
+        getattr(args, "host", None),
+        None,
+        cfg_override=cfg,
+    )
     logger = RotatingJsonLogger(log_path=paths.cache_dir / "mipmem.log")
 
     backend = resolve_sync_backend(
@@ -720,6 +770,12 @@ def _register_phase4_subcommands(
         action="store_true",
         help="Quiet background worker mode invoked by Stop hook.",
     )
+    p_sync.add_argument(
+        "--if-configured",
+        action="store_true",
+        help="Exit 0 with a skipped result when [sync] backend is unconfigured.",
+    )
+    p_sync.add_argument("--config", default=None, help="Override config.toml file path.")
     p_sync.add_argument("--host", default=None, help="Explicit active host_id override.")
     p_sync.add_argument("--vault", default=None, help="Override vault directory path.")
 
@@ -916,6 +972,44 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _log_detached_cli_error(raw_args: list[str], exc: Exception) -> None:
+    """Persist a redacted CP-SYN-01 failure record when a --detached invocation errors."""
+    try:
+        from mipmem.config import resolve_paths
+        from mipmem.core.diagnostics import (
+            CP_SYN_01,
+            SYNC_TRANSPORT_FAILED,
+            MipmemError,
+            RotatingJsonLogger,
+        )
+        from mipmem.core.redactor import redact_text, register_default_scrubber
+
+        register_default_scrubber(redact_text)
+        paths = resolve_paths()
+        logger = RotatingJsonLogger(log_path=paths.cache_dir / "mipmem.log")
+        err_code = exc.code if isinstance(exc, MipmemError) else SYNC_TRANSPORT_FAILED
+        err_msg = (
+            exc.message
+            if isinstance(exc, MipmemError)
+            else (str(exc) or exc.__class__.__name__)
+        )
+        logger.log_event(
+            "ERROR",
+            "cli",
+            CP_SYN_01,
+            error_code=err_code,
+            details={
+                "direction": "detached_cli",
+                "ok": False,
+                "exception": exc.__class__.__name__,
+                "message": err_msg,
+                "argv_len": len(raw_args),
+            },
+        )
+    except Exception:
+        pass
+
+
 def dispatch_full_cli(raw_args: list[str], boot_started: float) -> int:
     """Parse full argparse CLI arguments and handle Spec S1/S2 error envelopes."""
     json_mode = "--json" in raw_args
@@ -965,10 +1059,16 @@ def dispatch_full_cli(raw_args: list[str], boot_started: float) -> int:
     except Exception as exc:
         from mipmem.core.diagnostics import MipmemError
 
+        detached_mode = "--detached" in raw_args
+        if detached_mode:
+            _log_detached_cli_error(raw_args, exc)
+
         if isinstance(exc, MipmemError):
             if json_mode:
                 _emit_json(exc.to_dict())
             else:
                 sys.stderr.write(f"Error [{exc.code}]: {exc.message}\n")
+            return 1
+        if detached_mode:
             return 1
         raise
