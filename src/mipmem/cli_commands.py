@@ -302,6 +302,22 @@ def _handle_health_full(
         payload["indexed_sessions"] = indexed_sessions
         payload["indexed_brainstorms"] = indexed_brainstorms
 
+        from mipmem.config import default_config, load_config
+        from mipmem.core.subapps import discover_app_delegates
+        from mipmem.sync.base import read_sync_status
+
+        cfg = load_config(paths.config_file) if paths.config_file.is_file() else default_config()
+        sync_tbl = cfg.get("sync", {}) if isinstance(cfg, dict) else {}
+        sync_backend = (
+            str(sync_tbl.get("backend") or "none").strip().lower()
+            if isinstance(sync_tbl, dict)
+            else "none"
+        ) or "none"
+        delegates = discover_app_delegates(paths.config_dir, vault_root=paths.vault_dir)
+        payload["sync_backend"] = sync_backend
+        payload["last_sync_status"] = read_sync_status(paths.cache_dir)
+        payload["subapp_delegates_count"] = len(delegates)
+
     if json_mode:
         _emit_json(payload)
     else:
@@ -312,7 +328,9 @@ def _handle_health_full(
                 f" | fts5={payload['fts5_supported']} ({payload['fts5_tokenizer']}) "
                 f"| sessions={payload['indexed_sessions']} "
                 f"| brainstorms={payload['indexed_brainstorms']} "
-                f"| fts_ms={payload['fts5_query_ms']:.2f}ms"
+                f"| fts_ms={payload['fts5_query_ms']:.2f}ms "
+                f"| sync={payload['sync_backend']} "
+                f"| delegates={payload['subapp_delegates_count']}"
             )
         sys.stdout.write(
             f"mipmem {__version__} | vault={status} ({paths.vault_dir}) "
@@ -575,6 +593,158 @@ def _handle_bs(args: argparse.Namespace, json_mode: bool) -> int:
     raise MipmemError(CLI_INVALID_ARGUMENT, f"Unsupported bs action: {action!r}.")
 
 
+def _handle_fleet(args: argparse.Namespace, json_mode: bool) -> int:
+    """Display multi-host vault inventory, Sub-App telemetry, and cached sync status."""
+    from mipmem.core.diagnostics import RotatingJsonLogger
+    from mipmem.core.subapps import build_fleet_status, format_fleet_markdown
+
+    paths = _resolve_active_paths(getattr(args, "vault", None))
+    _require_initialized_vault(paths.vault_dir)
+    host_id, _ = _resolve_host_and_locale(paths, getattr(args, "host", None), None)
+    logger = RotatingJsonLogger(log_path=paths.cache_dir / "mipmem.log")
+    fleet = build_fleet_status(
+        paths.vault_dir,
+        active_host_id=host_id,
+        cache_dir=paths.cache_dir,
+        logger=logger,
+    )
+    if json_mode:
+        _emit_json({"success": True, "fleet": fleet})
+    else:
+        sys.stdout.write(format_fleet_markdown(fleet, surface="cli").rstrip() + "\n")
+    return 0
+
+
+def _handle_sync(args: argparse.Namespace, json_mode: bool) -> int:
+    """Execute pull, push, or full conflict-free vault synchronization."""
+    from mipmem.config import default_config, load_config
+    from mipmem.core.diagnostics import CLI_INVALID_ARGUMENT, MipmemError, RotatingJsonLogger
+    from mipmem.sync.base import resolve_sync_backend
+
+    pull_only = bool(getattr(args, "pull_only", False))
+    push_only = bool(getattr(args, "push_only", False))
+    detached = bool(getattr(args, "detached", False))
+    if pull_only and push_only:
+        raise MipmemError(
+            CLI_INVALID_ARGUMENT,
+            "Options --pull-only and --push-only are mutually exclusive.",
+        )
+
+    paths = _resolve_active_paths(getattr(args, "vault", None))
+    _require_initialized_vault(paths.vault_dir)
+    cfg = load_config(paths.config_file) if paths.config_file.is_file() else default_config()
+    host_id, locale = _resolve_host_and_locale(paths, getattr(args, "host", None), None)
+    logger = RotatingJsonLogger(log_path=paths.cache_dir / "mipmem.log")
+
+    backend = resolve_sync_backend(
+        cfg,
+        vault_dir=paths.vault_dir,
+        cache_dir=paths.cache_dir,
+        host_id=host_id,
+        locale=locale,
+        logger=logger,
+    )
+    if pull_only:
+        result = backend.pull()
+    elif push_only:
+        result = backend.push()
+    else:
+        result = backend.sync()
+
+    if not result.ok and result.error_code:
+        if detached:
+            return 1
+        raise MipmemError(result.error_code, result.message or "Vault sync failed.")
+
+    if detached:
+        return 0 if result.ok else 1
+
+    if json_mode:
+        _emit_json({"success": True, "result": result.to_dict()})
+    else:
+        sys.stdout.write(
+            f"Sync [{result.backend}/{result.direction}] ok "
+            f"(files={result.files_changed}, {result.duration_ms:.2f}ms)\n"
+        )
+    return 0
+
+
+def _handle_self_update(args: argparse.Namespace, json_mode: bool) -> int:
+    """Execute opt-in release verification and atomic zipapp self-update."""
+    from mipmem import __version__
+    from mipmem.config import resolve_paths
+    from mipmem.core.diagnostics import RotatingJsonLogger
+    from mipmem.core.updater import run_self_update
+
+    paths = resolve_paths()
+    logger = RotatingJsonLogger(log_path=paths.cache_dir / "mipmem.log")
+    result = run_self_update(
+        target_version=getattr(args, "version", None),
+        check_only=bool(getattr(args, "check", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        current_version=__version__,
+        logger=logger,
+    )
+    if json_mode:
+        _emit_json({"success": True, "result": result.to_dict()})
+    else:
+        sys.stdout.write(f"[{result.install_mode}] {result.message}\n")
+    return 0
+
+
+# @para-doc [#csa-cli-fleet-sync-update]
+def _register_phase4_subcommands(
+    subparsers: Any,
+    json_parent: argparse.ArgumentParser,
+    parser_cls: type[argparse.ArgumentParser],
+) -> None:
+    """Register lazy Spec S4 CLI subcommands (fleet, sync, self-update)."""
+    _ = parser_cls
+    p_fleet = subparsers.add_parser(
+        "fleet",
+        parents=[json_parent],
+        help="Show multi-host vault status, sub-app telemetry, and sync alerts.",
+    )
+    p_fleet.add_argument("--host", default=None, help="Override active host_id label.")
+    p_fleet.add_argument("--vault", default=None, help="Override vault directory path.")
+
+    p_sync = subparsers.add_parser(
+        "sync",
+        parents=[json_parent],
+        help="Run configured single-writer vault synchronization (git or folder).",
+    )
+    p_sync.add_argument("--pull-only", action="store_true", help="Pull remote shards only.")
+    p_sync.add_argument("--push-only", action="store_true", help="Push active host shard only.")
+    p_sync.add_argument(
+        "--detached",
+        action="store_true",
+        help="Quiet background worker mode invoked by Stop hook.",
+    )
+    p_sync.add_argument("--host", default=None, help="Explicit active host_id override.")
+    p_sync.add_argument("--vault", default=None, help="Override vault directory path.")
+
+    p_upd = subparsers.add_parser(
+        "self-update",
+        parents=[json_parent],
+        help="Opt-in release check and verified atomic zipapp self-update.",
+    )
+    p_upd.add_argument(
+        "--check",
+        action="store_true",
+        help="Check release availability and upgrade channel without modifying files.",
+    )
+    p_upd.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Verify release manifest and SHA256SUMS without swapping binary.",
+    )
+    p_upd.add_argument(
+        "--version",
+        default=None,
+        help="Target release version tag (e.g. v1.0.0).",
+    )
+
+
 # @para-doc [#csa-cli-memory-commands]
 def _register_memory_subcommands(
     subparsers: Any,
@@ -741,6 +911,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mcp.add_argument("--vault", default=None, help="Override vault directory path.")
 
     _register_memory_subcommands(subparsers, json_parent, _CliArgumentParser)
+    _register_phase4_subcommands(subparsers, json_parent, _CliArgumentParser)
 
     return parser
 
@@ -775,6 +946,12 @@ def dispatch_full_cli(raw_args: list[str], boot_started: float) -> int:
             return _handle_recall(args, json_mode)
         if cmd == "bs":
             return _handle_bs(args, json_mode)
+        if cmd == "fleet":
+            return _handle_fleet(args, json_mode)
+        if cmd == "sync":
+            return _handle_sync(args, json_mode)
+        if cmd == "self-update":
+            return _handle_self_update(args, json_mode)
         if cmd == "hook":
             from mipmem.adapters.hook_io import run_hook_safe
 

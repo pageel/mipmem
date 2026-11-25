@@ -23,10 +23,12 @@ from mipmem.core.diagnostics import (
     INVALID_BRAINSTORM_STATUS,
     INVALID_SLICE_SELECTOR,
     MIGRATE_SOURCE_MISSING,
+    SYNC_BACKEND_UNCONFIGURED,
     VAULT_NOT_INITIALIZED,
     VAULT_PATH_TRAVERSAL,
     register_default_scrubber,
 )
+from mipmem.core.updater import UpdateResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,6 +65,10 @@ class TestCliDispatcher(unittest.TestCase):
                 "assert 'mipmem.core.fts_recall' not in sys.modules; "
                 "assert 'mipmem.core.redactor' not in sys.modules; "
                 "assert 'mipmem.core.migrate_v2' not in sys.modules; "
+                "assert 'mipmem.core.subapps' not in sys.modules; "
+                "assert 'mipmem.core.updater' not in sys.modules; "
+                "assert 'mipmem.sync' not in sys.modules; "
+                "assert 'urllib' not in sys.modules; "
                 "assert 'mipmem.adapters.hook_io' not in sys.modules; "
                 "assert 'mipmem.mcp.server' not in sys.modules; "
                 "rc = cli.main(['health', '--json']); "
@@ -71,6 +77,10 @@ class TestCliDispatcher(unittest.TestCase):
                 "assert 'mipmem.core.fts_recall' not in sys.modules; "
                 "assert 'mipmem.core.redactor' not in sys.modules; "
                 "assert 'mipmem.core.migrate_v2' not in sys.modules; "
+                "assert 'mipmem.core.subapps' not in sys.modules; "
+                "assert 'mipmem.core.updater' not in sys.modules; "
+                "assert 'mipmem.sync' not in sys.modules; "
+                "assert 'urllib' not in sys.modules; "
                 "assert 'mipmem.adapters.hook_io' not in sys.modules; "
                 "assert 'mipmem.mcp.server' not in sys.modules"
             )
@@ -541,6 +551,148 @@ class TestCliDispatcher(unittest.TestCase):
             self.assertEqual(r1["result"]["serverInfo"]["name"], "mipmem")
             self.assertEqual(len(r2["result"]["tools"]), 6)
             self.assertEqual(r3["result"]["structuredContent"]["subapp_telemetry"], [])
+
+    def test_s4_fleet_sync_self_update_and_health_deep_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            cfg_dir = base / "cfg"
+            vault_dir = base / "vault"
+            cache_dir = base / "cache"
+            sync_dir = base / "shared_sync"
+            sync_dir.mkdir(parents=True)
+
+            env_map = {
+                "MIPMEM_CONFIG_DIR": str(cfg_dir),
+                "MIPMEM_VAULT_DIR": str(vault_dir),
+                "MIPMEM_CACHE_DIR": str(cache_dir),
+            }
+            rc, out, err = _run_cli(["init", "--host", "host-cli", "--json"], env_map)
+            self.assertEqual(rc, 0, msg=out + err)
+
+            tel_dir = vault_dir / "hosts" / "host-cli" / "telemetry"
+            tel_dir.mkdir(parents=True, exist_ok=True)
+            (tel_dir / "docker.status.json").write_text(
+                json.dumps(
+                    {
+                        "app_id": "docker",
+                        "status": "ok",
+                        "badge": "2 up",
+                        "l0_summary": "containers running",
+                        "alert_on_l0": False,
+                        "detail_file": "telemetry/docker.detail.md",
+                        "updated_at": "2026-11-23T10:00:00.000Z",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            sub_env = {
+                key: val
+                for key, val in os.environ.items()
+                if key not in ("PYTHONPATH", "MIPMEM_CONFIG_DIR", "MIPMEM_VAULT_DIR")
+            }
+            sub_env["PYTHONPATH"] = str(REPO_ROOT / "src")
+            sub_env.update(env_map)
+
+            # 1. mipmem fleet --json
+            proc_fleet = subprocess.run(
+                [sys.executable, "-m", "mipmem", "fleet", "--json"],
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_fleet.returncode, 0, msg=proc_fleet.stderr + proc_fleet.stdout)
+            fleet_data = json.loads(proc_fleet.stdout)
+            self.assertTrue(fleet_data["success"])
+            self.assertEqual(fleet_data["fleet"]["active_host_id"], "host-cli")
+            self.assertEqual(len(fleet_data["fleet"]["subapp_telemetry"]), 1)
+            self.assertIn("sync_status", fleet_data["fleet"])
+
+            # 2. mipmem sync --json fails gracefully when unconfigured
+            rc_unconf, out_unconf, err_unconf = _run_cli(["sync", "--json"], env_map)
+            self.assertNotEqual(rc_unconf, 0)
+            self.assertEqual(err_unconf, "")
+            self.assertEqual(json.loads(out_unconf)["error"]["code"], SYNC_BACKEND_UNCONFIGURED)
+
+            # Configure folder backend and test sync + --detached + mutual exclusion
+            for key, val in (
+                ("sync.backend", "folder"),
+                ("sync.folder_path", str(sync_dir)),
+            ):
+                rc_cfg, out_cfg, err_cfg = _run_cli(["config", "set", key, val, "--json"], env_map)
+                self.assertEqual(rc_cfg, 0, msg=out_cfg + err_cfg)
+
+            proc_sync = subprocess.run(
+                [sys.executable, "-m", "mipmem", "sync", "--json"],
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_sync.returncode, 0, msg=proc_sync.stderr + proc_sync.stdout)
+            sync_data = json.loads(proc_sync.stdout)
+            self.assertTrue(sync_data["success"])
+            self.assertEqual(sync_data["result"]["backend"], "folder")
+
+            proc_det = subprocess.run(
+                [sys.executable, "-m", "mipmem", "sync", "--detached"],
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_det.returncode, 0, msg=proc_det.stderr + proc_det.stdout)
+            self.assertEqual(proc_det.stdout, "")
+
+            rc_both, out_both, _ = _run_cli(
+                ["sync", "--pull-only", "--push-only", "--json"],
+                env_map,
+            )
+            self.assertNotEqual(rc_both, 0)
+            self.assertEqual(json.loads(out_both)["error"]["code"], CLI_INVALID_ARGUMENT)
+
+            # 3. health --deep --json includes S4 sync & subapp fields
+            rc_deep, out_deep, err_deep = _run_cli(["health", "--deep", "--json"], env_map)
+            self.assertEqual(rc_deep, 0, msg=out_deep + err_deep)
+            deep_data = json.loads(out_deep)
+            self.assertEqual(deep_data["sync_backend"], "folder")
+            self.assertEqual(deep_data["last_sync_status"]["backend"], "folder")
+            self.assertEqual(deep_data["subapp_delegates_count"], 0)
+
+            # 4. self-update --help & offline mocked --check --json
+            proc_help = subprocess.run(
+                [sys.executable, "-m", "mipmem", "self-update", "--help"],
+                env=sub_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_help.returncode, 0, msg=proc_help.stderr)
+            self.assertIn("--check", proc_help.stdout)
+
+            mock_res = UpdateResult(
+                install_mode="zipapp",
+                target_path="/tmp/mipmem.pyz",
+                current_version="0.3.0",
+                target_version="1.0.0",
+                update_available=True,
+                check_only=True,
+                recommended_command="mipmem self-update",
+                message="Update available: 0.3.0 -> 1.0.0",
+            )
+            with mock.patch("mipmem.core.updater.run_self_update", return_value=mock_res) as m_upd:
+                rc_upd, out_upd, err_upd = _run_cli(
+                    ["self-update", "--check", "--json"],
+                    env_map,
+                )
+            self.assertEqual(rc_upd, 0, msg=out_upd + err_upd)
+            self.assertEqual(err_upd, "")
+            self.assertEqual(m_upd.call_count, 1)
+            upd_data = json.loads(out_upd)
+            self.assertTrue(upd_data["success"])
+            self.assertEqual(upd_data["result"]["target_version"], "1.0.0")
+            self.assertTrue(upd_data["result"]["update_available"])
 
 
 if __name__ == "__main__":
