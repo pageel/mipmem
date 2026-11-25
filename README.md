@@ -13,7 +13,7 @@ MipMem is built strictly on the **Python >= 3.9 standard library** (`dependencie
 
 ---
 
-## Key Architecture & Safety Guarantees (`v1.0.0`)
+## Key Architecture & Safety Guarantees (`v1.0.1`)
 
 - **Zero External Dependencies & Zero LLM Cost:** Runs anywhere Python `>= 3.9` is installed with zero runtime packages (`dependencies = []`) and zero embedding or LLM API calls.
 - **4-Layer Mipmap Engine (`L0 → L3`):**
@@ -25,7 +25,7 @@ MipMem is built strictly on the **Python >= 3.9 standard library** (`dependencie
   - Allows machine-local `/mem <app>` delegates via `<config_dir>/apps.d/*.json` only (never read from the synced Vault), verifying POSIX UID ownership, non-group/world-writable permissions (`mode & 0o022 == 0`), `shell=False`, timeout caps (`5s` default, `15s` hard max), secret redaction, and collision protection against core `/mem` commands.
 - **Conflict-Free Multi-Host Vault & Git/Folder Sync (`mipmem.sync`):**
   - Strict single-writer layout (`hosts/<host_id>/`, `shared/brainstorms/by-host/<host_id>/`) with local gitignored `.cache/global_fts.db`.
-  - **`GitSyncBackend`:** Uses `GIT_TERMINAL_PROMPT=0` (OS SSH-Agent / Credential Helper, zero stored PATs), `fcntl.flock` on `<cache_dir>/sync.lock`, `core.filemode=false`, single-writer staging, `git pull --rebase --autostash`, automatic `git rebase --abort` + `sync_status.json` conflict alert on manual shared edits, and detached `Stop`-hook sync (`start_new_session=True`, `0ms` foreground UI block).
+  - **`GitSyncBackend`:** Uses `GIT_TERMINAL_PROMPT=0` (OS SSH-Agent / Credential Helper, zero stored PATs), `fcntl.flock` on `<cache_dir>/sync.lock`, `core.filemode=false`, single-writer staging, `git pull --rebase --autostash`, automatic `git rebase --abort` + `sync_status.json` conflict alert on manual shared edits, and detached `Stop`-hook sync (`start_new_session=True`, `0ms` foreground UI block) with redacted `CP-SYN-01` errors logged to `<cache_dir>/mipmem.log`.
   - **`FolderSyncBackend`:** Bi-directional atomic single-writer sync across Syncthing, Tailscale Drive, or shared local directories (`[sync].folder_path`), ignoring `.cache/` and `.git/`, preventing nested-vault recursion, and skipping escaping symlinks.
 - **Opt-In Verified Self-Update (`core/updater.py`):**
   - Strictly opt-in (`mipmem self-update [--check | --dry-run | --version <tag>]`). Enforces HTTPS allowlists to official `pageel/mipmem` GitHub Releases, verifies `SHA256SUMS` (`hmac.compare_digest`), checks `ZipFile.testzip()`, runs pre-swap `health --json` in isolation, atomically swaps via `os.replace()`, and refuses modifying `uv`/`pipx`/`pip`/Plugin/git-dev installs (printing the channel-appropriate upgrade command instead).
@@ -118,7 +118,7 @@ Exposed MCP tools: `mem_recall`, `mem_bs_list`, `mem_bs_slice`, `mem_bs_save`, `
 
 ---
 
-## CLI Reference (`v1.0.0`)
+## CLI Reference (`v1.0.1`)
 
 | Command | Purpose |
 | :--- | :--- |
@@ -126,7 +126,7 @@ Exposed MCP tools: `mem_recall`, `mem_bs_list`, `mem_bs_slice`, `mem_bs_save`, `
 | `mipmem config [show \| get <k> \| set <k> <v>] [--json]` | Display, read, or validate & persist typed settings in `config.toml` |
 | `mipmem health [--vault <dir>] [--require-vault] [--deep] [--json]` | Fast `< 25ms` check, or `--deep` FTS5, index, `sync_backend`, `last_sync_status`, and `subapp_delegates_count` probe |
 | `mipmem fleet [--host <id>] [--vault <dir>] [--json]` | Output multi-host inventory, Sub-App telemetry, and cached sync status |
-| `mipmem sync [--pull-only \| --push-only \| --detached] [--host <id>] [--vault <dir>] [--json]` | Execute conflict-free Git or Folder vault synchronization |
+| `mipmem sync [--pull-only \| --push-only \| --detached \| --if-configured] [--config <path>] [--host <id>] [--vault <dir>] [--json]` | Execute conflict-free Git or Folder vault synchronization (exits `0` no-op with `--if-configured` when unconfigured; accepts custom `--config <path>`) |
 | `mipmem self-update [--check \| --dry-run \| --version <tag>] [--json]` | Check for releases or atomically update a standalone zipapp (`SHA256SUMS` + `testzip()` + pre-swap `health`) |
 | `mipmem migrate --from-v2 <dir> [--vault <dir>] [--host <id>] [--apply] [--force] [--json]` | Preview (`--dry-run` default) or idempotently import a legacy v2 flat memory directory |
 | `mipmem index [--rebuild] [--locale en\|vi] [--vault <dir>] [--json]` | Incrementally sync (or `--rebuild`) `.cache/global_fts.db` from the Sharded Vault |
@@ -162,6 +162,31 @@ Starter configuration template: copy [config.example.toml](config.example.toml) 
   - `backend = "git"` + `vault_remote_url = "git@github.com:example-user/my-mipmem-vault.git"` + `auto_sync_on_stop = true` (uses OS SSH-Agent or Git Credential Helper; zero PATs stored)
   - or `backend = "folder"` + `folder_path = "/path/to/shared-sync-folder"` (for Syncthing, Tailscale Drive, or local shared folders)
 
+### Linux Shell Exit-Flush Wrapper (Bash / Zsh)
+
+Interactive Antigravity CLI sessions run `Stop` hooks after each turn, while typing `/exit` terminates the outer shell process without triggering another model turn. Add a portable wrapper to `~/.bashrc` or `~/.zshrc` to guarantee a vault sync flush on exit (while preserving the exact `$?` exit code of `agy`):
+
+```bash
+agy() {
+  command agy "$@"
+  local rc=$?
+  if command -v mipmem >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout --signal=INT 20 mipmem sync --if-configured >/dev/null 2>&1 || true
+    else
+      mipmem sync --if-configured >/dev/null 2>&1 || true
+    fi
+  fi
+  return "$rc"
+}
+```
+
+- **Single-file `.pyz` users:** Replace `mipmem` with `python3 /path/to/mipmem.pyz` (optionally append `--detached` after `--if-configured` for instant `0ms` prompt return).
+- **Cadence modes (`[sync].auto_sync_on_stop` in `config.toml`):**
+  1. `auto_sync_on_stop = true` *(default)*: Auto-syncs after every turn across CLI & IDE, plus guarantees a final `/exit` flush (`sync.lock` prevents overlap).
+  2. `auto_sync_on_stop = false`: Zero background pushes during active CLI chat turns, batching changes into one clean sync commit when exiting `agy`.
+- `timeout --signal=INT 20` avoids abrupt `SIGKILL` interruption during Git operations while `GIT_TERMINAL_PROMPT=0` prevents credential prompts from hanging shell exit.
+
 ---
 
 ## Repository Layout
@@ -173,7 +198,7 @@ Starter configuration template: copy [config.example.toml](config.example.toml) 
 │   └── workflows/
 │       ├── ci.yml                   # Lint, pyright, clean-room, verify_release, Python 3.9–3.13 + macOS matrix & .pyz determinism
 │       └── release.yml              # Tag-triggered Dual-Channel Release: GitHub Releases (provenance + SHA256SUMS) & PyPI OIDC + PEP 740
-├── plugin.json                      # Native Antigravity Plugin manifest (v1.0.0)
+├── plugin.json                      # Native Antigravity Plugin manifest (v1.0.1)
 ├── hooks.json                       # Flat SessionStart / PreInvocation / Stop hook bindings
 ├── mcp_config.json                  # Local stdio MCP server binding (bin/mipmem.pyz mcp)
 ├── rules/
@@ -185,9 +210,9 @@ Starter configuration template: copy [config.example.toml](config.example.toml) 
 ├── pyproject.toml                   # Python >= 3.9, dependencies = [], Pageel Contributors metadata
 ├── README.md                        # English-first OSS documentation
 ├── README.vi.md                     # Vietnamese community guide
-├── CHANGELOG.md                     # Keep a Changelog history through v1.0.0
+├── CHANGELOG.md                     # Keep a Changelog history through v1.0.1
 ├── LICENSE                          # MIT License
-├── bin/mipmem.pyz                   # Deterministic single-file zipapp binary (v1.0.0)
+├── bin/mipmem.pyz                   # Deterministic single-file zipapp binary (v1.0.1)
 ├── scripts/
 │   ├── build_pyz.py                 # Deterministic zipapp bundler
 │   ├── check_cleanroom.py           # Tree, archive (.pyz/.zip/.whl/.tar.gz), and --git-history clean-room scanner
