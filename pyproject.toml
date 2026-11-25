@@ -4,13 +4,42 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mipmem"
-version = "0.3.0"
+version = "1.0.0"
 description = "Zero-Token, Zero-Dependency 4-Layer Mipmapped Cognitive Memory Engine for AI Agents"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Pageel Contributors" }]
+keywords = [
+  "ai-agents",
+  "memory",
+  "mcp",
+  "sqlite",
+  "fts5",
+  "antigravity",
+  "cognitive-memory",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/pageel/mipmem"
+Repository = "https://github.com/pageel/mipmem"
+Issues = "https://github.com/pageel/mipmem/issues"
+Changelog = "https://github.com/pageel/mipmem/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mipmem = "mipmem.cli:main"

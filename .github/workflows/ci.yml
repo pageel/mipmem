@@ -43,6 +43,7 @@ jobs:
           src/mipmem/i18n/*.py
           src/mipmem/adapters/*.py
           src/mipmem/mcp/*.py
+          src/mipmem/sync/*.py
           scripts/*.py
           tests/*.py
 
@@ -56,6 +57,9 @@ jobs:
 
       - name: Run Clean-Room Scanner
         run: python3 scripts/check_cleanroom.py
+
+      - name: Validate Dual-Channel release readiness
+        run: python3 scripts/verify_release.py .
 
       - name: Validate Native Antigravity Plugin bundle
         run: >
@@ -137,8 +141,10 @@ jobs:
           "
 
   macos-smoke:
-    name: Optional macOS Smoke Test
-    if: github.event_name == 'workflow_dispatch' && inputs.run_macos == true
+    name: macOS Smoke Test
+    if: >-
+      github.event.repository.private == false ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_macos == true)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
