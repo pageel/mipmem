@@ -529,6 +529,54 @@ class TestAntigravityIdeAdapter(unittest.TestCase):
                 any(entry["error_code"] == ADAPTER_READ_FAILED for entry in log_entries)
             )
 
+    def test_ide_adapter_strips_root_user_request_wrappers_only(self) -> None:
+        from mipmem.adapters.agy_ide import _extract_user_text, extract_ide_conversation
+
+        wrapped_prompt = (
+            "<USER_REQUEST>\nFix redactor word boundary bug\n</USER_REQUEST>\n"
+            "<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-26\n</ADDITIONAL_METADATA>"
+        )
+        self.assertEqual(
+            _extract_user_text({"userInput": {"items": [{"text": wrapped_prompt}]}}),
+            "Fix redactor word boundary bug",
+        )
+        empty_wrapped = "<USER_REQUEST>\n   \n</USER_REQUEST>"
+        self.assertEqual(
+            _extract_user_text({"type": "USER_INPUT", "text": empty_wrapped}),
+            empty_wrapped,
+        )
+        prose = "Please check <USER_REQUEST> handling in the parser."
+        self.assertEqual(_extract_user_text({"type": "USER", "text": prose}), prose)
+        fenced = "```xml\n<USER_REQUEST>code snippet</USER_REQUEST>\n```"
+        self.assertEqual(_extract_user_text({"role": "user", "content": fenced}), fenced)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            logs_dir = (
+                Path(tmp_dir)
+                / ".gemini"
+                / "antigravity"
+                / "brain"
+                / "conv-wrap-01"
+                / ".system_generated"
+                / "logs"
+            )
+            logs_dir.mkdir(parents=True)
+            compact_path = logs_dir / "transcript.jsonl"
+            compact_path.write_text(
+                json.dumps(
+                    {
+                        "userInput": {"items": [{"text": wrapped_prompt}]},
+                        "timestamp": "2026-11-26T04:00:00.000Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            conv = extract_ide_conversation(compact_path)
+            self.assertIsNotNone(conv)
+            assert conv is not None
+            self.assertEqual(conv.recent_prompts, ["Fix redactor word boundary bug"])
+
 
 if __name__ == "__main__":
     unittest.main()

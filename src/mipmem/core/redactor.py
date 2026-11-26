@@ -26,38 +26,39 @@ _URI_PASS_PATTERN = re.compile(
 _TOKEN_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "GITHUB_FINE_PAT",
-        re.compile("github" + r"_pat_[A-Za-z0-9_]{20,}"),
+        re.compile(r"(?<![A-Za-z0-9])" + "github" + r"_pat_[A-Za-z0-9_]{20,}"),
         "[REDACTED:GITHUB_FINE_PAT]",
     ),
     (
         "GITHUB_PAT",
-        re.compile("ghp" + r"_[A-Za-z0-9]{20,}"),
+        re.compile(r"(?<![A-Za-z0-9])" + "ghp" + r"_[A-Za-z0-9]{20,}"),
         "[REDACTED:GITHUB_PAT]",
     ),
     (
         "GITHUB_OAUTH",
-        re.compile(r"\bgh[ousr]" + r"_[A-Za-z0-9]{20,}"),
+        re.compile(r"(?<![A-Za-z0-9])gh[ousr]" + r"_[A-Za-z0-9]{20,}"),
         "[REDACTED:GITHUB_OAUTH]",
     ),
     (
         "OPENAI_KEY",
-        re.compile("sk" + r"-(?:proj-)?[A-Za-z0-9_-]{20,}"),
+        re.compile(r"(?<![A-Za-z0-9])" + "sk" + r"-(?:proj-)?[A-Za-z0-9_-]{20,}"),
         "[REDACTED:OPENAI_KEY]",
     ),
     (
         "GOOGLE_API_KEY",
-        re.compile("AIza" + r"[0-9A-Za-z_-]{30,}"),
+        re.compile(r"(?<![A-Za-z0-9])" + "AIza" + r"[0-9A-Za-z_-]{30,}"),
         "[REDACTED:GOOGLE_API_KEY]",
     ),
     (
         "AWS_ACCESS_KEY",
-        re.compile("AKIA" + r"[0-9A-Z]{16}"),
+        re.compile(r"(?<![A-Za-z0-9])" + "AKIA" + r"[0-9A-Z]{16}"),
         "[REDACTED:AWS_ACCESS_KEY]",
     ),
     (
         "JWT_TOKEN",
         re.compile(
-            "eyJ"
+            r"(?<![A-Za-z0-9])"
+            + "eyJ"
             + r"[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
         ),
         "[REDACTED:JWT_TOKEN]",
@@ -91,6 +92,7 @@ def _safe_home_dir(home_dir: Optional[Path]) -> Optional[str]:
     return normalized
 
 
+# @para-doc [#csa-redactor-token-word-boundary]
 def redact_with_stats(text: str, home_dir: Optional[Path] = None) -> RedactionResult:
     """Apply pattern and path redaction and return redacted text with statistics."""
     if not text:

@@ -25,6 +25,7 @@ from mipmem.core.diagnostics import (
     CP_SYN_01,
     INVALID_BRAINSTORM_STATUS,
     INVALID_SLICE_SELECTOR,
+    JOIN_HOST_CONFLICT,
     MIGRATE_SOURCE_MISSING,
     SYNC_BACKEND_UNCONFIGURED,
     VAULT_NOT_INITIALIZED,
@@ -872,6 +873,155 @@ class TestCliDispatcher(unittest.TestCase):
                     and e.get("details", {}).get("ok") is False
                     for e in entries_after
                 )
+            )
+
+    def test_cli_init_refresh_guide_and_join_e2e_with_guards(self) -> None:
+        from mipmem.cli_commands import _build_parser
+        from mipmem.core.sessions import SessionRecord, write_session_record
+        from mipmem.sync.git_backend import GitSyncBackend
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            sub_env = {
+                "PATH": os.environ.get("PATH", ""),
+                "XDG_CONFIG_HOME": str(root / "xdg-cfg"),
+                "XDG_DATA_HOME": str(root / "xdg-data"),
+                "XDG_CACHE_HOME": str(root / "xdg-cache"),
+            }
+            vault_a = root / "vault-alpha"
+            bare_repo = root / "remote.git"
+            subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True,
+                           capture_output=True, text=True)
+
+            # 1. init & explicit --refresh-guide
+            with mock.patch.dict(os.environ, sub_env, clear=True):
+                rc_init = dispatch_full_cli(
+                    ["init", "--vault", str(vault_a), "--host", "host-alpha", "--json"],
+                    time.perf_counter(),
+                )
+                self.assertEqual(rc_init, 0)
+                (vault_a / "AGENTS.md").write_text("# Edited\n", encoding="utf-8")
+
+                buf_ref = io.StringIO()
+                with contextlib.redirect_stdout(buf_ref):
+                    rc_ref = dispatch_full_cli(
+                        [
+                            "init",
+                            "--vault",
+                            str(vault_a),
+                            "--host",
+                            "host-alpha",
+                            "--refresh-guide",
+                            "--json",
+                        ],
+                        time.perf_counter(),
+                    )
+            self.assertEqual(rc_ref, 0)
+            ref_payload = json.loads(buf_ref.getvalue())
+            self.assertEqual(ref_payload["guides_written"], ["AGENTS.md", "README.md"])
+            self.assertIn("Safety Guard", (vault_a / "AGENTS.md").read_text(encoding="utf-8"))
+
+            write_session_record(
+                vault_a,
+                SessionRecord(
+                    conversation_id="conv-cli-join-01",
+                    host_id="host-alpha",
+                    surface="cli",
+                    title="CLI onboarding check",
+                    last_modified_time="2026-11-26T06:10:00Z",
+                    recent_prompts=["Join machine via CLI"],
+                ),
+            )
+            self.assertTrue(
+                GitSyncBackend(
+                    vault_dir=vault_a,
+                    cache_dir=root / "cache-a",
+                    remote_url=str(bare_repo),
+                    host_id="host-alpha",
+                ).sync().ok
+            )
+
+            # 2. MP7 Parser contract for join
+            parsed = _build_parser().parse_args(
+                ["join", str(bare_repo), "--host", "machine-b", "--locale", "vi", "--json"]
+            )
+            self.assertEqual(parsed.command, "join")
+            self.assertEqual(parsed.host, "machine-b")
+            self.assertEqual(parsed.locale, "vi")
+
+            # 3. E2E CLI join success
+            vault_b = root / "vault-beta"
+            cfg_b = root / "cfg-beta" / "config.toml"
+            buf_join = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, sub_env, clear=True),
+                contextlib.redirect_stdout(buf_join),
+            ):
+                rc_join = dispatch_full_cli(
+                    [
+                        "join",
+                        str(bare_repo),
+                        "--host",
+                        "machine-b",
+                        "--locale",
+                        "vi",
+                        "--vault",
+                        str(vault_b),
+                        "--config",
+                        str(cfg_b),
+                        "--json",
+                    ],
+                    time.perf_counter(),
+                )
+            self.assertEqual(rc_join, 0)
+            join_payload = json.loads(buf_join.getvalue())
+            self.assertTrue(join_payload["success"])
+            self.assertEqual(join_payload["host_id"], "machine-b")
+            self.assertEqual(join_payload["existing_hosts"], ["host-alpha"])
+            self.assertIn("indexed_sessions", join_payload)
+            self.assertIn("indexed_brainstorms", join_payload)
+            self.assertIn("sync_result", join_payload)
+            self.assertIn("guides_written", join_payload)
+
+            # 4. Duplicate host blocked -> JOIN_HOST_CONFLICT JSON envelope
+            buf_dup = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, sub_env, clear=True),
+                contextlib.redirect_stdout(buf_dup),
+            ):
+                rc_dup = dispatch_full_cli(
+                    [
+                        "join",
+                        str(bare_repo),
+                        "--host",
+                        "host-alpha",
+                        "--vault",
+                        str(root / "vault-dup"),
+                        "--config",
+                        str(root / "cfg-dup" / "config.toml"),
+                        "--json",
+                    ],
+                    time.perf_counter(),
+                )
+            self.assertEqual(rc_dup, 1)
+            self.assertEqual(json.loads(buf_dup.getvalue())["error"]["code"], JOIN_HOST_CONFLICT)
+
+            # 5. Symlink --vault blocked -> VAULT_PATH_TRAVERSAL
+            sym_vault = root / "sym-vault"
+            sym_vault.symlink_to(vault_b)
+            buf_sym = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, sub_env, clear=True),
+                contextlib.redirect_stdout(buf_sym),
+            ):
+                rc_sym = dispatch_full_cli(
+                    ["join", str(bare_repo), "--vault", str(sym_vault), "--json"],
+                    time.perf_counter(),
+                )
+            self.assertEqual(rc_sym, 1)
+            self.assertEqual(
+                json.loads(buf_sym.getvalue())["error"]["code"],
+                VAULT_PATH_TRAVERSAL,
             )
 
 

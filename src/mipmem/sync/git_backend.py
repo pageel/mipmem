@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 import os
 from pathlib import Path
 import subprocess
@@ -10,9 +11,14 @@ import time
 from typing import Any, Mapping, Optional, Union
 
 from mipmem.core.diagnostics import (
+    CLI_INVALID_ARGUMENT,
     CP_SYN_01,
+    JOIN_HOST_CONFLICT,
+    JOIN_VAULT_OCCUPIED,
     SYNC_CONFLICT_DETECTED,
     SYNC_TRANSPORT_FAILED,
+    VAULT_PATH_TRAVERSAL,
+    MipmemError,
     RotatingJsonLogger,
     _utc_timestamp_ms,
 )
@@ -159,6 +165,8 @@ class GitSyncBackend:
         """Stage and commit ONLY this host's single-writer shards and shared manifests."""
         candidates = [
             ".gitignore",
+            "AGENTS.md",
+            "README.md",
             "vault_manifest.json",
             "shared/pinned_global.md",
             f"hosts/{self.host_id}",
@@ -450,6 +458,314 @@ class GitSyncBackend:
             )
             self._emit("INFO", final)
             return final
+
+
+_TBD_MARKER = "[" + "TBD]"
+
+
+@dataclass(frozen=True)
+class JoinResult:
+    """Result returned by join_git_vault for CLI JSON envelopes and diagnostics."""
+
+    ok: bool
+    host_id: str
+    existing_hosts: list[str]
+    vault_dir: str
+    config_file: str
+    remote_url: str
+    adopt_host: bool
+    indexed_sessions: int
+    indexed_brainstorms: int
+    guides_written: list[str]
+    sync_result: Optional[SyncResult] = None
+    duration_ms: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize JoinResult into a JSON-compatible dictionary."""
+        payload = asdict(self)
+        payload["sync_result"] = (
+            self.sync_result.to_dict() if self.sync_result is not None else None
+        )
+        return payload
+
+
+def validate_git_remote_url(remote_url: str) -> str:
+    """Validate a Git remote URL/path while rejecting CLI flag injection and placeholders."""
+    cleaned = str(remote_url or "").strip() if isinstance(remote_url, str) else ""
+    if (
+        not cleaned
+        or cleaned == _TBD_MARKER
+        or cleaned.startswith("-")
+        or "\x00" in cleaned
+        or "\n" in cleaned
+        or "\r" in cleaned
+    ):
+        raise MipmemError(
+            CLI_INVALID_ARGUMENT,
+            f"Invalid Git remote URL {remote_url!r}: cannot be empty or start with '-'.",
+        )
+    return cleaned
+
+
+def _normalize_remote_url(raw_url: str) -> str:
+    """Normalize local filesystem paths and Git remote URLs for origin comparison."""
+    cleaned = raw_url.strip().rstrip("/")
+    if "://" not in cleaned and not cleaned.startswith("git@"):
+        try:
+            cleaned = str(Path(cleaned).expanduser().resolve()).rstrip("/")
+        except OSError:
+            pass
+    if len(cleaned) > 4 and cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    return cleaned
+
+
+def _scan_existing_vault_hosts(vault_dir: Path) -> list[str]:
+    """Return sorted host_id directory names under vault/hosts/ without following symlinks."""
+    from mipmem.core.vault import HOST_ID_RE
+
+    hosts_dir = vault_dir / "hosts"
+    if not hosts_dir.is_dir() or hosts_dir.is_symlink():
+        return []
+    root_resolved = vault_dir.resolve()
+    found: list[str] = []
+    for entry in sorted(hosts_dir.iterdir()):
+        if not entry.is_dir() or entry.is_symlink():
+            continue
+        if not entry.resolve().is_relative_to(root_resolved):
+            continue
+        if HOST_ID_RE.match(entry.name):
+            found.append(entry.name)
+    return found
+
+
+def _prepare_git_clone_or_verify_existing(
+    clean_url: str,
+    vault_path: Path,
+) -> None:
+    """Verify existing vault_path is safe/matching or clone clean_url with shell=False."""
+    if vault_path.exists():
+        if not vault_path.is_dir():
+            raise MipmemError(
+                JOIN_VAULT_OCCUPIED,
+                f"Target vault path '{vault_path}' exists and is not a directory. "
+                "Pass --vault <new_dir> instead.",
+            )
+        git_entry = vault_path / ".git"
+        if git_entry.exists():
+            origin_proc = _run_git(vault_path, ["remote", "get-url", "origin"])
+            origin_url = origin_proc.stdout.strip() if origin_proc.returncode == 0 else ""
+            if not origin_url or (
+                _normalize_remote_url(origin_url) != _normalize_remote_url(clean_url)
+            ):
+                raise MipmemError(
+                    JOIN_VAULT_OCCUPIED,
+                    f"Target vault directory '{vault_path}' is already occupied by a different "
+                    "repository or files. Pass --vault <new_dir> instead.",
+                )
+            pull_proc = _run_git(vault_path, ["fetch", "origin"])
+            if pull_proc.returncode != 0:
+                detail = scrub_without_logging(pull_proc.stderr or pull_proc.stdout).strip()
+                raise MipmemError(
+                    SYNC_TRANSPORT_FAILED,
+                    f"Git join transport failed: {detail or 'git fetch failed'}",
+                )
+            return
+        if any(vault_path.iterdir()):
+            raise MipmemError(
+                JOIN_VAULT_OCCUPIED,
+                f"Target vault directory '{vault_path}' is already occupied by a different "
+                "repository or files. Pass --vault <new_dir> instead.",
+            )
+
+    vault_path.parent.mkdir(parents=True, exist_ok=True)
+    clone_proc = subprocess.run(
+        ["git", "clone", "--", clean_url, str(vault_path)],
+        shell=False,
+        capture_output=True,
+        text=True,
+        timeout=60.0,
+        check=False,
+        env=_git_env(),
+    )
+    if clone_proc.returncode != 0:
+        detail = scrub_without_logging(clone_proc.stderr or clone_proc.stdout).strip()
+        raise MipmemError(
+            SYNC_TRANSPORT_FAILED,
+            f"Git join transport failed: {detail or 'git clone failed'}",
+        )
+
+
+# @para-doc [#csa-sync-git-join-engine]
+def join_git_vault(
+    remote_url: str,
+    *,
+    vault_dir: Union[str, Path],
+    cache_dir: Union[str, Path],
+    config_file: Union[str, Path],
+    host_id: Optional[str] = None,
+    adopt_host: bool = False,
+    locale: Optional[str] = None,
+    auto_sync_on_stop: bool = True,
+    skip_sync: bool = False,
+    home_dir: Optional[Path] = None,
+    logger: Optional[RotatingJsonLogger] = None,
+) -> JoinResult:
+    """Clone a private Git vault, enforce collision guards, configure host, index FTS, and sync."""
+    from mipmem.config import default_config, load_config, save_config
+    from mipmem.core.fts_recall import sync_fts_index
+    from mipmem.core.vault import default_host_id, init_vault, validate_host_id
+
+    started = time.perf_counter()
+    clean_url = validate_git_remote_url(remote_url)
+
+    vault_candidate = Path(vault_dir).expanduser()
+    if vault_candidate.is_symlink():
+        raise MipmemError(
+            VAULT_PATH_TRAVERSAL,
+            "Security block: vault root cannot be a symlink.",
+        )
+    vault_path = vault_candidate.resolve()
+
+    cfg_candidate = Path(config_file).expanduser()
+    if cfg_candidate.is_symlink() or cfg_candidate.is_dir():
+        raise MipmemError(
+            CLI_INVALID_ARGUMENT,
+            f"Invalid config path: {config_file!r}.",
+        )
+
+    cache_path = Path(cache_dir).expanduser()
+    active_logger = logger if logger is not None else RotatingJsonLogger(
+        log_path=cache_path / "mipmem.log"
+    )
+    target_host = default_host_id() if host_id is None else validate_host_id(host_id)
+
+    try:
+        _prepare_git_clone_or_verify_existing(clean_url, vault_path)
+    except MipmemError as exc:
+        active_logger.log_event(
+            "ERROR",
+            "sync",
+            CP_SYN_01,
+            error_code=exc.code,
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 3),
+            details={
+                "direction": "join",
+                "host_id": target_host,
+                "adopt_host": adopt_host,
+                "existing_hosts_count": 0,
+                "ok": False,
+            },
+        )
+        raise
+
+    _run_git(vault_path, ["config", "core.filemode", "false"])
+    name_proc = _run_git(vault_path, ["config", "--get", "user.name"])
+    if not name_proc.stdout.strip():
+        _run_git(vault_path, ["config", "user.name", "MipMem Sync"])
+    email_proc = _run_git(vault_path, ["config", "--get", "user.email"])
+    if not email_proc.stdout.strip():
+        _run_git(vault_path, ["config", "user.email", "mipmem@localhost.invalid"])
+
+    existing_hosts = _scan_existing_vault_hosts(vault_path)
+    if target_host in existing_hosts and not adopt_host:
+        active_logger.log_event(
+            "WARN",
+            "sync",
+            CP_SYN_01,
+            error_code=JOIN_HOST_CONFLICT,
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 3),
+            details={
+                "direction": "join",
+                "host_id": target_host,
+                "adopt_host": adopt_host,
+                "existing_hosts_count": len(existing_hosts),
+                "ok": False,
+            },
+        )
+        raise MipmemError(
+            JOIN_HOST_CONFLICT,
+            f"Host ID '{target_host}' already exists in vault "
+            f"(existing: {', '.join(existing_hosts)}). "
+            "Pick another --host or pass --adopt-host to reclaim it.",
+        )
+
+    had_agents = (vault_path / "AGENTS.md").exists()
+    had_readme = (vault_path / "README.md").exists()
+    init_vault(vault_path, host_id=target_host, home_dir=home_dir, logger=active_logger)
+    guides_written: list[str] = []
+    if not had_agents and (vault_path / "AGENTS.md").exists():
+        guides_written.append("AGENTS.md")
+    if not had_readme and (vault_path / "README.md").exists():
+        guides_written.append("README.md")
+
+    cfg = load_config(cfg_candidate) if cfg_candidate.is_file() else default_config()
+    core_tbl = cfg.setdefault("core", {})
+    if isinstance(core_tbl, dict):
+        core_tbl["host_id"] = target_host
+        core_tbl["vault_path"] = str(vault_path)
+        if locale is not None and str(locale).strip():
+            core_tbl["locale"] = str(locale).strip().lower()
+    sync_tbl = cfg.setdefault("sync", {})
+    if isinstance(sync_tbl, dict):
+        sync_tbl["backend"] = "git"
+        sync_tbl["vault_remote_url"] = clean_url
+        sync_tbl["auto_sync_on_stop"] = bool(auto_sync_on_stop)
+    saved_cfg = save_config(cfg, cfg_candidate)
+
+    resolved_locale = str(cfg.get("core", {}).get("locale", "en")).strip().lower() or "en"
+    fts_report = sync_fts_index(
+        vault_path,
+        locale=resolved_locale,
+        rebuild=True,
+        logger=active_logger,
+    )
+
+    sync_res: Optional[SyncResult] = None
+    if not skip_sync:
+        backend = GitSyncBackend(
+            vault_dir=vault_path,
+            cache_dir=cache_path,
+            remote_url=clean_url,
+            host_id=target_host,
+            locale=resolved_locale,
+            logger=active_logger,
+        )
+        sync_res = backend.sync()
+        if not sync_res.ok:
+            raise MipmemError(
+                sync_res.error_code or SYNC_TRANSPORT_FAILED,
+                sync_res.message or "Git sync failed after join.",
+            )
+
+    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 3)
+    active_logger.log_event(
+        "INFO",
+        "sync",
+        CP_SYN_01,
+        duration_ms=elapsed_ms,
+        details={
+            "direction": "join",
+            "host_id": target_host,
+            "adopt_host": adopt_host,
+            "existing_hosts_count": len(existing_hosts),
+            "ok": True,
+        },
+    )
+    return JoinResult(
+        ok=True,
+        host_id=target_host,
+        existing_hosts=existing_hosts,
+        vault_dir=str(vault_path),
+        config_file=str(saved_cfg),
+        remote_url=clean_url,
+        adopt_host=adopt_host,
+        indexed_sessions=fts_report.indexed_sessions,
+        indexed_brainstorms=fts_report.indexed_brainstorms,
+        guides_written=guides_written,
+        sync_result=sync_res,
+        duration_ms=elapsed_ms,
+    )
 
 
 def _detect_running_pyz() -> Optional[Path]:

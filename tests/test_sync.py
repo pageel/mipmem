@@ -759,6 +759,166 @@ class TestFolderSyncBackend(unittest.TestCase):
             escaped = vault_dir / "hosts" / "host-alpha" / "sessions" / "escape.md"
             self.assertFalse(escaped.exists())
 
+    def test_join_git_vault_e2e_conflict_guards_adopt_host_and_unborn_remote(self) -> None:
+        from mipmem.config import load_config
+        from mipmem.core.diagnostics import (
+            CLI_INVALID_ARGUMENT,
+            JOIN_HOST_CONFLICT,
+            JOIN_VAULT_OCCUPIED,
+        )
+        from mipmem.core.fts_recall import recall_memory
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            bare_remote = root / "remote.git"
+            subprocess.run(["git", "init", "--bare", str(bare_remote)], check=True,
+                           capture_output=True, text=True)
+
+            # Host alpha initializes vault, creates session + brainstorm, syncs to bare remote.
+            vault_a = root / "vault-alpha"
+            cache_a = root / "cache-alpha"
+            init_vault(vault_a, host_id="host-alpha")
+            write_session_record(
+                vault_a,
+                SessionRecord(
+                    conversation_id="conv-alpha-join-01",
+                    host_id="host-alpha",
+                    surface="cli",
+                    title="Distributed onboarding checkpoint",
+                    last_modified_time="2026-11-26T06:00:00Z",
+                    recent_prompts=["Onboard machine with mipmem join command"],
+                ),
+            )
+            save_brainstorm_shard(
+                vault_a,
+                "Cross Host Sync Plan",
+                "## Architecture\nZero conflict host shards.\n",
+                host_id="host-alpha",
+            )
+            backend_a = GitSyncBackend(
+                vault_dir=vault_a,
+                cache_dir=cache_a,
+                remote_url=str(bare_remote),
+                host_id="host-alpha",
+            )
+            self.assertTrue(backend_a.sync().ok)
+
+            tree = subprocess.run(
+                ["git", "--git-dir", str(bare_remote), "ls-tree", "-r", "--name-only", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.splitlines()
+            self.assertIn("AGENTS.md", tree)
+            self.assertIn("README.md", tree)
+
+            from mipmem.sync.git_backend import join_git_vault, validate_git_remote_url
+
+            tbd = "[" + "TBD]"
+            for bad_url in ("", tbd, "-oProxyCommand=id", "--upload-pack=sh", "a\nb", "a\x00b"):
+                with self.assertRaises(MipmemError) as url_ctx:
+                    validate_git_remote_url(bad_url)
+                self.assertEqual(url_ctx.exception.code, CLI_INVALID_ARGUMENT)
+
+            # Host beta joins bare remote into fresh directory -> recalls alpha + pushes cleanly.
+            vault_b = root / "vault-beta"
+            cache_b = root / "cache-beta"
+            cfg_b = root / "cfg-beta" / "config.toml"
+            log_b = cache_b / "mipmem.log"
+            join_res = join_git_vault(
+                str(bare_remote),
+                vault_dir=vault_b,
+                cache_dir=cache_b,
+                config_file=cfg_b,
+                host_id="host-beta",
+                locale="en",
+                logger=RotatingJsonLogger(log_path=log_b),
+            )
+            self.assertTrue(join_res.ok)
+            self.assertEqual(join_res.host_id, "host-beta")
+            self.assertEqual(join_res.existing_hosts, ["host-alpha"])
+            self.assertTrue((vault_b / "AGENTS.md").is_file())
+            self.assertGreaterEqual(join_res.indexed_sessions, 1)
+            loaded_b = load_config(cfg_b)
+            self.assertEqual(loaded_b["core"]["host_id"], "host-beta")
+            self.assertEqual(loaded_b["sync"]["backend"], "git")
+            self.assertEqual(loaded_b["sync"]["vault_remote_url"], str(bare_remote))
+            hits = recall_memory(vault_b, "Onboard machine with mipmem join", locale="en")
+            self.assertGreaterEqual(len(hits.hits), 1)
+            filemode = subprocess.run(
+                ["git", "-C", str(vault_b), "config", "--get", "core.filemode"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(filemode, "false")
+
+            # Colliding host_id rejected without --adopt-host, allowed with adopt_host=True.
+            vault_dup = root / "vault-dup"
+            with self.assertRaises(MipmemError) as dup_ctx:
+                join_git_vault(
+                    str(bare_remote),
+                    vault_dir=vault_dup,
+                    cache_dir=root / "cache-dup",
+                    config_file=root / "cfg-dup" / "config.toml",
+                    host_id="host-alpha",
+                    adopt_host=False,
+                )
+            self.assertEqual(dup_ctx.exception.code, JOIN_HOST_CONFLICT)
+
+            adopted = join_git_vault(
+                str(bare_remote),
+                vault_dir=vault_dup,
+                cache_dir=root / "cache-dup",
+                config_file=root / "cfg-dup" / "config.toml",
+                host_id="host-alpha",
+                adopt_host=True,
+            )
+            self.assertTrue(adopted.ok)
+            self.assertEqual(adopted.host_id, "host-alpha")
+
+            # Occupied non-matching vault dirs rejected cleanly without mutating files.
+            occupied_dir = root / "occupied-non-git"
+            occupied_dir.mkdir()
+            (occupied_dir / "keep.txt").write_text("keep me", encoding="utf-8")
+            with self.assertRaises(MipmemError) as occ_ctx:
+                join_git_vault(
+                    str(bare_remote),
+                    vault_dir=occupied_dir,
+                    cache_dir=root / "cache-occ",
+                    config_file=root / "cfg-occ" / "config.toml",
+                    host_id="host-gamma",
+                )
+            self.assertEqual(occ_ctx.exception.code, JOIN_VAULT_OCCUPIED)
+            self.assertEqual((occupied_dir / "keep.txt").read_text(encoding="utf-8"), "keep me")
+
+            other_remote = root / "other-remote.git"
+            subprocess.run(["git", "init", "--bare", str(other_remote)], check=True,
+                           capture_output=True, text=True)
+            with self.assertRaises(MipmemError) as mismatch_ctx:
+                join_git_vault(
+                    str(other_remote),
+                    vault_dir=vault_b,
+                    cache_dir=cache_b,
+                    config_file=cfg_b,
+                    host_id="host-beta",
+                )
+            self.assertEqual(mismatch_ctx.exception.code, JOIN_VAULT_OCCUPIED)
+
+            # Empty unborn bare repository join succeeds and creates initial commit.
+            unborn_remote = root / "unborn.git"
+            subprocess.run(["git", "init", "--bare", str(unborn_remote)], check=True,
+                           capture_output=True, text=True)
+            unborn_res = join_git_vault(
+                str(unborn_remote),
+                vault_dir=root / "vault-unborn",
+                cache_dir=root / "cache-unborn",
+                config_file=root / "cfg-unborn" / "config.toml",
+                host_id="host-delta",
+            )
+            self.assertTrue(unborn_res.ok)
+            self.assertEqual(unborn_res.existing_hosts, [])
+
 
 if __name__ == "__main__":
     unittest.main()
