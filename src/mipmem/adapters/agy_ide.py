@@ -82,6 +82,21 @@ def _infer_conversation_id(transcript_path: Path) -> str:
     return transcript_path.stem or "session-unknown"
 
 
+# @para-doc [#csa-ide-prompt-wrapper-stripper]
+def _strip_ide_prompt_wrappers(text: str) -> str:
+    """Strip outer Antigravity IDE XML request/metadata wrappers when present at root."""
+    stripped = text.strip()
+    open_tag = "<USER_REQUEST>"
+    close_tag = "</USER_REQUEST>"
+    if not stripped.startswith(open_tag):
+        return text
+    end_idx = stripped.find(close_tag, len(open_tag))
+    if end_idx < 0:
+        return text
+    inner = stripped[len(open_tag):end_idx].strip()
+    return inner or stripped
+
+
 def _extract_user_text(entry: dict[str, Any]) -> str:
     """Extract user prompt text from compact or nested Antigravity userInput objects."""
     user_obj = entry.get("userInput") or entry.get("user_input")
@@ -97,11 +112,11 @@ def _extract_user_text(entry: dict[str, Any]) -> str:
                 elif isinstance(item, str) and item.strip():
                     parts.append(item.strip())
             if parts:
-                return "\n".join(parts)
+                return _strip_ide_prompt_wrappers("\n".join(parts))
         for key in ("text", "content", "message"):
             val = user_obj.get(key)
             if isinstance(val, str) and val.strip():
-                return val.strip()
+                return _strip_ide_prompt_wrappers(val.strip())
 
     entry_type = str(entry.get("type") or "").upper()
     role = str(entry.get("role") or "").lower()
@@ -109,7 +124,7 @@ def _extract_user_text(entry: dict[str, Any]) -> str:
         for key in ("text", "content", "message"):
             val = entry.get(key)
             if isinstance(val, str) and val.strip():
-                return val.strip()
+                return _strip_ide_prompt_wrappers(val.strip())
     return ""
 
 

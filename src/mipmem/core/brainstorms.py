@@ -323,6 +323,7 @@ def _parse_toc_from_meta(raw_toc: Any) -> Optional[list[TocSection]]:
     return parsed
 
 
+# @para-doc [#csa-brainstorm-id-auto-heal]
 def _build_shard_from_disk(
     vault_resolved: Path,
     md_path: Path,
@@ -344,7 +345,15 @@ def _build_shard_from_disk(
     parsed_toc = _parse_toc_from_meta(raw_meta.get("toc"))
     toc = parsed_toc if parsed_toc is not None else ast.toc
 
-    raw_bs_id = str(raw_meta.get("bs_id", "")).strip() or md_path.stem
+    candidate_bs_id = str(raw_meta.get("bs_id", "")).strip()
+    if (
+        candidate_bs_id
+        and _BS_ID_RE.match(candidate_bs_id)
+        and ".." not in candidate_bs_id
+    ):
+        raw_bs_id = candidate_bs_id
+    else:
+        raw_bs_id = md_path.stem
     title = str(raw_meta.get("title", "")).strip() or ast.title
     status = _normalize_loaded_status(raw_meta.get("status", "open"))
     line_count = (

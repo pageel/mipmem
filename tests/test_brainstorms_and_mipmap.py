@@ -402,6 +402,39 @@ class TestMipmapRendererAndSlicer(unittest.TestCase):
                 f"Expected INVALID_SLICE_SELECTOR for {bad!r}",
             )
 
+    def test_auto_heals_legacy_redacted_bs_id_on_read_without_mutating_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault_root = Path(tmp_dir) / "vault"
+            init_vault(vault_root, host_id="host-alpha")
+
+            shard_dir = vault_root / "shared" / "brainstorms" / "by-host" / "host-alpha"
+            stem = "2026-11-10_disk" + "-cleanup-guide_1d3f0c67"
+            md_path = shard_dir / f"{stem}.md"
+            meta_path = shard_dir / f"{stem}.meta.json"
+
+            md_path.write_text(
+                "# Disk Cleanup Guide\n\n## Storage Audit\nClean temporary artifacts.\n",
+                encoding="utf-8",
+            )
+            legacy_meta = {
+                "bs_id": "2026-11-10_di[REDACTED:OPENAI_KEY]",
+                "title": "Disk Cleanup Guide",
+                "origin_host": "host-alpha",
+                "status": "decided",
+            }
+            meta_path.write_text(json.dumps(legacy_meta, indent=2), encoding="utf-8")
+            original_meta_bytes = meta_path.read_bytes()
+
+            shards = discover_brainstorm_shards(vault_root)
+            self.assertEqual(len(shards), 1)
+            self.assertEqual(shards[0].bs_id, stem)
+
+            loaded_shard, loaded_md = load_brainstorm_shard(vault_root, stem)
+            self.assertEqual(loaded_shard.bs_id, stem)
+            sliced = slice_brainstorm_l2(loaded_md, selector="§1", bs_id=loaded_shard.bs_id)
+            self.assertIn("## Storage Audit", sliced.content)
+            self.assertEqual(meta_path.read_bytes(), original_meta_bytes)
+
 
 if __name__ == "__main__":
     unittest.main()

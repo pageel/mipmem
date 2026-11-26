@@ -32,6 +32,8 @@ from mipmem.core.diagnostics import (
     HOOK_INVALID_PAYLOAD,
     INVALID_BRAINSTORM_STATUS,
     INVALID_SLICE_SELECTOR,
+    JOIN_HOST_CONFLICT,
+    JOIN_VAULT_OCCUPIED,
     MCP_INVALID_PARAMS,
     MCP_METHOD_NOT_FOUND,
     MCP_PARSE_ERROR,
@@ -39,6 +41,7 @@ from mipmem.core.diagnostics import (
     S2_ERROR_CODES,
     S3_ERROR_CODES,
     S4_ERROR_CODES,
+    S5_ERROR_CODES,
     SLASH_COMMAND_INVALID,
     SPEC_ERROR_CODES,
     SUBAPP_EXEC_FAILED,
@@ -177,7 +180,7 @@ class TestDiagnostics(unittest.TestCase):
                 INVALID_BRAINSTORM_STATUS,
             ),
         )
-        self.assertEqual(len(ALL_ERROR_CODES), 25)
+        self.assertEqual(len(ALL_ERROR_CODES), 27)
         self.assertEqual((CP_IDX_01, CP_FTS_01, CP_MIP_01), ("CP-IDX-01", "CP-FTS-01", "CP-MIP-01"))
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_file = Path(tmp_dir) / "mipmem.log"
@@ -203,7 +206,7 @@ class TestDiagnostics(unittest.TestCase):
             ),
         )
         self.assertEqual(len(S3_ERROR_CODES), 7)
-        self.assertEqual(len(set(ALL_ERROR_CODES)), 25)
+        self.assertEqual(len(set(ALL_ERROR_CODES)), 27)
         self.assertEqual((CP_HK_01, CP_ADP_01, CP_MCP_01), ("CP-HK-01", "CP-ADP-01", "CP-MCP-01"))
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_file = Path(tmp_dir) / "mipmem.log"
@@ -229,8 +232,8 @@ class TestDiagnostics(unittest.TestCase):
             ),
         )
         self.assertEqual(len(S4_ERROR_CODES), 7)
-        self.assertEqual(len(ALL_ERROR_CODES), 25)
-        self.assertEqual(len(set(ALL_ERROR_CODES)), 25)
+        self.assertEqual(len(ALL_ERROR_CODES), 27)
+        self.assertEqual(len(set(ALL_ERROR_CODES)), 27)
         self.assertEqual((CP_SUB_01, CP_SYN_01, CP_UPD_01), ("CP-SUB-01", "CP-SYN-01", "CP-UPD-01"))
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_file = Path(tmp_dir) / "mipmem.log"
@@ -245,6 +248,48 @@ class TestDiagnostics(unittest.TestCase):
             self.assertEqual(len(lines), 3)
             events = [json.loads(line)["event"] for line in lines]
             self.assertEqual(events, ["CP-SUB-01", "CP-SYN-01", "CP-UPD-01"])
+
+    def test_s5_error_codes_and_join_envelopes(self) -> None:
+        self.assertEqual(
+            S5_ERROR_CODES,
+            (
+                JOIN_HOST_CONFLICT,
+                JOIN_VAULT_OCCUPIED,
+            ),
+        )
+        self.assertEqual(len(S5_ERROR_CODES), 2)
+        self.assertEqual(len(ALL_ERROR_CODES), 27)
+        self.assertEqual(len(set(ALL_ERROR_CODES)), 27)
+
+        host_err = MipmemError(
+            JOIN_HOST_CONFLICT,
+            "Host ID 'host-alpha' already exists in vault.",
+        )
+        self.assertEqual(
+            host_err.to_dict(),
+            {
+                "success": False,
+                "error": {
+                    "code": "JOIN_HOST_CONFLICT",
+                    "message": "Host ID 'host-alpha' already exists in vault.",
+                },
+            },
+        )
+
+        occupied_err = MipmemError(
+            JOIN_VAULT_OCCUPIED,
+            "Target vault directory is occupied by another repo.",
+        )
+        self.assertEqual(
+            occupied_err.to_dict(),
+            {
+                "success": False,
+                "error": {
+                    "code": "JOIN_VAULT_OCCUPIED",
+                    "message": "Target vault directory is occupied by another repo.",
+                },
+            },
+        )
 
 
 if __name__ == "__main__":

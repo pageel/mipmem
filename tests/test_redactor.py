@@ -156,6 +156,54 @@ class TestRedactor(unittest.TestCase):
             self.assertIn("[REDACTED:OPENAI_KEY]", raw_log)
             self.assertEqual(len(raw_log.splitlines()), 1)
 
+    def test_word_boundary_prevents_slug_false_positives_and_catches_real_keys(self) -> None:
+        clean_slugs = (
+            "2026-11-10_disk" + "-cleanup-guide_1d3f0c67 "
+            + "ask" + "-question-about-architecture-12345678 "
+            + "task" + "-runner-bootstrap-configuration-9999"
+        )
+        slug_res = redact_with_stats(clean_slugs, home_dir=Path("/home/alice"))
+        self.assertEqual(slug_res.text, clean_slugs)
+        self.assertEqual(slug_res.total_secrets, 0)
+        self.assertEqual(slug_res.redacted_counts, {})
+
+        openai_key = "sk" + "-" + ("A" * 28)
+        openai_proj = "sk" + "-proj-" + ("B" * 28)
+        google_key = "AIza" + ("C" * 35)
+        aws_key = "AKIA" + ("D" * 16)
+        gh_pat = "ghp" + "_" + ("E" * 30)
+        gh_fine = "github" + "_pat_" + ("F" * 24)
+        gh_oauth = "gho" + "_" + ("G" * 30)
+        jwt_tok = "eyJ" + ("a" * 10) + ".eyJ" + ("b" * 10) + "." + ("c" * 12)
+
+        real_samples = [
+            openai_key,
+            f"OPENAI_API_KEY={openai_key}",
+            f"key:{openai_proj}",
+            f'"{openai_key}"',
+            f"'{openai_proj}'",
+            f"bearer {jwt_tok}",
+            f"path/{google_key}",
+            f"prefix_{aws_key}",
+            f"TOKEN={gh_pat}",
+            f"FINE={gh_fine}",
+            f"OAUTH={gh_oauth}",
+        ]
+        joined = "\n".join(real_samples)
+        redacted = redact_with_stats(joined, home_dir=Path("/home/alice"))
+        self.assertGreaterEqual(redacted.total_secrets, 11)
+        for secret in (
+            openai_key,
+            openai_proj,
+            google_key,
+            aws_key,
+            gh_pat,
+            gh_fine,
+            gh_oauth,
+            jwt_tok,
+        ):
+            self.assertNotIn(secret, redacted.text)
+
 
 if __name__ == "__main__":
     unittest.main()
