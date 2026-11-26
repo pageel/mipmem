@@ -16,6 +16,7 @@ from mipmem.core.diagnostics import (
     CP_VLT_01,
     VAULT_PATH_TRAVERSAL,
     MipmemError,
+    RotatingJsonLogger,
     register_default_scrubber,
 )
 from mipmem.core import vault as vault_mod
@@ -466,6 +467,59 @@ class TestMutationJournal(unittest.TestCase):
                 append_mutation_event(vault_root, "host-alpha", "", "bs-1", {})
             with self.assertRaises(ValueError):
                 append_mutation_event(vault_root, "host-alpha", "brainstorm", "   ", {})
+
+    def test_init_vault_writes_host_agnostic_onboarding_guides_and_supports_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            vault_root = root / "vault"
+            log_file = root / "mipmem.log"
+            logger = RotatingJsonLogger(log_path=log_file)
+            home_dir = Path("/home/alice")
+
+            init_vault(vault_root, host_id="host-alpha", home_dir=home_dir, logger=logger)
+            agents_path = vault_root / "AGENTS.md"
+            readme_path = vault_root / "README.md"
+            self.assertTrue(agents_path.is_file())
+            self.assertTrue(readme_path.is_file())
+
+            agents_text = agents_path.read_text(encoding="utf-8")
+            readme_text = readme_path.read_text(encoding="utf-8")
+            self.assertIn("Safety Guard", agents_text)
+            self.assertIn("mipmem join", agents_text)
+            self.assertIn("hosts/*/", agents_text)
+            self.assertIn("auto_sync_on_stop", agents_text)
+            self.assertIn("mipmem join", readme_text)
+            for forbidden in ("host-alpha", "/home/alice", "2026-"):
+                self.assertNotIn(forbidden, agents_text)
+                self.assertNotIn(forbidden, readme_text)
+
+            # Write-if-missing: custom edits survive subsequent init_vault calls.
+            agents_path.write_text("# Custom Vault Guide\n", encoding="utf-8")
+            init_vault(vault_root, host_id="host-alpha", home_dir=home_dir, logger=logger)
+            self.assertEqual(agents_path.read_text(encoding="utf-8"), "# Custom Vault Guide\n")
+
+            from mipmem.core.vault import ensure_vault_onboarding_guides
+
+            refreshed = ensure_vault_onboarding_guides(
+                vault_root,
+                refresh=True,
+                home_dir=home_dir,
+                logger=logger,
+            )
+            self.assertEqual(refreshed, ["AGENTS.md", "README.md"])
+            self.assertIn("Safety Guard", agents_path.read_text(encoding="utf-8"))
+            entries = [
+                json.loads(line)
+                for line in log_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(
+                any(
+                    e["event"] == CP_VLT_01
+                    and e["details"].get("action") == "refresh_guides"
+                    for e in entries
+                )
+            )
 
 
 if __name__ == "__main__":

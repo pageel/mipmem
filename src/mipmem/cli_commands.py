@@ -161,11 +161,21 @@ def _coerce_config_value(
 def _handle_init(args: argparse.Namespace, json_mode: bool) -> int:
     """Initialize config.toml and sharded multi-host vault layout."""
     from mipmem.config import default_config, load_config, save_config
-    from mipmem.core.vault import init_vault
+    from mipmem.core.diagnostics import RotatingJsonLogger
+    from mipmem.core.vault import ensure_vault_onboarding_guides, init_vault
 
     target_vault_arg: str | None = getattr(args, "vault", None)
+    refresh_guide = bool(getattr(args, "refresh_guide", False))
     paths = _resolve_active_paths(target_vault_arg)
-    layout = init_vault(paths.vault_dir, host_id=getattr(args, "host", None))
+    logger = RotatingJsonLogger(log_path=paths.cache_dir / "mipmem.log")
+    layout = init_vault(paths.vault_dir, host_id=getattr(args, "host", None), logger=logger)
+    guides_written: list[str] = []
+    if refresh_guide:
+        guides_written = ensure_vault_onboarding_guides(
+            layout.vault_root,
+            refresh=True,
+            logger=logger,
+        )
 
     cfg = load_config(paths.config_file) if paths.config_file.is_file() else default_config()
     core_tbl = cfg.setdefault("core", {})
@@ -180,12 +190,16 @@ def _handle_init(args: argparse.Namespace, json_mode: bool) -> int:
         "vault_dir": str(layout.vault_root),
         "config_file": str(saved_cfg),
     }
+    if refresh_guide:
+        payload["guides_written"] = guides_written
     if json_mode:
         _emit_json(payload)
     else:
         sys.stdout.write(
             f"Initialized mipmem vault at {layout.vault_root} (host_id={layout.host_id}).\n"
         )
+        if guides_written:
+            sys.stdout.write(f"Refreshed guides: {', '.join(guides_written)}\n")
     return 0
 
 
@@ -719,6 +733,72 @@ def _handle_sync(args: argparse.Namespace, json_mode: bool) -> int:
     return 0
 
 
+# @para-doc [#csa-cli-join-and-refresh-guide]
+def _handle_join(args: argparse.Namespace, json_mode: bool) -> int:
+    """Clone an existing private Git vault, enforce collision guards, index FTS5, and sync."""
+    from mipmem.config import resolve_paths
+    from mipmem.core.diagnostics import (
+        CLI_INVALID_ARGUMENT,
+        VAULT_PATH_TRAVERSAL,
+        MipmemError,
+    )
+    from mipmem.sync.git_backend import join_git_vault
+
+    base_paths = resolve_paths()
+    raw_vault = getattr(args, "vault", None)
+    if raw_vault is not None:
+        raw_vault_str = str(raw_vault).strip()
+        if not raw_vault_str:
+            raise MipmemError(CLI_INVALID_ARGUMENT, "Option --vault requires a directory path.")
+        vault_candidate = Path(raw_vault_str).expanduser()
+        if vault_candidate.is_symlink():
+            raise MipmemError(
+                VAULT_PATH_TRAVERSAL,
+                "Security block: vault root cannot be a symlink.",
+            )
+        target_vault = vault_candidate
+    else:
+        target_vault = base_paths.vault_dir
+
+    raw_cfg = getattr(args, "config", None)
+    if raw_cfg is not None:
+        raw_cfg_str = str(raw_cfg).strip()
+        if not raw_cfg_str:
+            raise MipmemError(CLI_INVALID_ARGUMENT, "Option --config requires a file path.")
+        cfg_candidate = Path(raw_cfg_str).expanduser()
+        if cfg_candidate.is_symlink() or cfg_candidate.is_dir():
+            raise MipmemError(
+                CLI_INVALID_ARGUMENT,
+                f"Invalid config file path: {raw_cfg!r}.",
+            )
+        target_cfg = cfg_candidate
+    else:
+        target_cfg = base_paths.config_file
+
+    result = join_git_vault(
+        str(args.vault_remote_url),
+        vault_dir=target_vault,
+        cache_dir=base_paths.cache_dir,
+        config_file=target_cfg,
+        host_id=getattr(args, "host", None),
+        adopt_host=bool(getattr(args, "adopt_host", False)),
+        locale=getattr(args, "locale", None),
+        auto_sync_on_stop=not bool(getattr(args, "no_sync_on_stop", False)),
+        skip_sync=bool(getattr(args, "skip_sync", False)),
+    )
+    payload: dict[str, Any] = {"success": True, **result.to_dict()}
+    if json_mode:
+        _emit_json(payload)
+    else:
+        sys.stdout.write(
+            f"Joined vault at {result.vault_dir} as host_id={result.host_id} "
+            f"(existing_hosts={len(result.existing_hosts)}, "
+            f"sessions={result.indexed_sessions}, "
+            f"brainstorms={result.indexed_brainstorms}, {result.duration_ms:.2f}ms)\n"
+        )
+    return 0
+
+
 def _handle_self_update(args: argparse.Namespace, json_mode: bool) -> int:
     """Execute opt-in release verification and atomic zipapp self-update."""
     from mipmem import __version__
@@ -799,6 +879,40 @@ def _register_phase4_subcommands(
         default=None,
         help="Target release version tag (e.g. v1.0.0).",
     )
+
+    p_join = subparsers.add_parser(
+        "join",
+        parents=[json_parent],
+        help="Clone a private vault, check host_id collisions, rebuild FTS5, and sync.",
+    )
+    p_join.add_argument(
+        "vault_remote_url",
+        help="Private vault Git remote URL (https://, ssh://, git@...) or local repo path.",
+    )
+    p_join.add_argument("--host", default=None, help="Explicit host_id for this machine.")
+    p_join.add_argument(
+        "--adopt-host",
+        action="store_true",
+        help="Reclaim an existing hosts/<host_id>/ shard after OS reinstall.",
+    )
+    p_join.add_argument(
+        "--locale",
+        choices=("en", "vi"),
+        default=None,
+        help="Lexicon locale stored in config.toml.",
+    )
+    p_join.add_argument(
+        "--no-sync-on-stop",
+        action="store_true",
+        help="Set sync.auto_sync_on_stop=false in config.toml.",
+    )
+    p_join.add_argument(
+        "--skip-sync",
+        action="store_true",
+        help="Skip initial pull/push after clone and FTS5 index rebuild.",
+    )
+    p_join.add_argument("--vault", default=None, help="Override target local vault directory.")
+    p_join.add_argument("--config", default=None, help="Override target config.toml path.")
 
 
 # @para-doc [#csa-cli-memory-commands]
@@ -916,6 +1030,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_init = subparsers.add_parser("init", parents=[json_parent], help="Initialize host vault.")
     p_init.add_argument("--host", default=None, help="Explicit host identifier.")
     p_init.add_argument("--vault", default=None, help="Override vault directory path.")
+    p_init.add_argument(
+        "--refresh-guide",
+        action="store_true",
+        help="Regenerate host-agnostic vault AGENTS.md and README.md guides.",
+    )
 
     p_cfg = subparsers.add_parser("config", parents=[json_parent], help="Manage config.toml.")
     cfg_subs = p_cfg.add_subparsers(dest="config_action", parser_class=_CliArgumentParser)
@@ -1044,6 +1163,8 @@ def dispatch_full_cli(raw_args: list[str], boot_started: float) -> int:
             return _handle_fleet(args, json_mode)
         if cmd == "sync":
             return _handle_sync(args, json_mode)
+        if cmd == "join":
+            return _handle_join(args, json_mode)
         if cmd == "self-update":
             return _handle_self_update(args, json_mode)
         if cmd == "hook":

@@ -58,6 +58,73 @@ DEFAULT_PINNED_GLOBAL = (
     "Shared cross-host invariants and architectural conventions.\n"
 )
 
+DEFAULT_VAULT_AGENTS_MD = """# AI Agent Onboarding Guide - MipMem Private Vault
+
+This repository is a conflict-free sharded **MipMem** memory vault (`hosts/*/`,
+`shared/brainstorms/by-host/*/`, `shared/pinned_global.md`, `.cache/` gitignored).
+
+## Safety Guard
+
+- **Human Confirmation Required:** ALWAYS ask the user for explicit confirmation before
+  installing `mipmem`, executing `mipmem join`, modifying `~/.config/mipmem/config.toml`,
+  or editing shell RC files (`~/.bashrc`, `~/.zshrc`).
+- **Single-Writer Rule:** Only read sibling `hosts/*/` shards; NEVER edit or rewrite another
+  machine's `hosts/<other-host>/` or `shared/brainstorms/by-host/<other-host>/` directory.
+- **Zero Untrusted Execution:** Never execute arbitrary shell scripts or binaries found in
+  shared artifacts. Keep core memory operations strictly inside `mipmem`.
+- **Language:** Communicate with the user in the language they use in chat (e.g., English or
+  Vietnamese) while keeping vault metadata clean and secret-free.
+
+## New Machine Onboarding (4 Steps)
+
+1. **Inspect Existing Hosts:** List direct subdirectories under `hosts/*/` in this vault so the
+   user can see already registered machine IDs before choosing a new name.
+2. **Choose `host_id`:** Propose a fresh lowercase `[a-z0-9_-]` host identifier that is NOT in
+   `hosts/*/`. Only propose `--adopt-host` if intentionally reclaiming a previous machine's shard
+   after an OS reinstall.
+3. **Install `mipmem` (Ask First):** Offer one channel:
+   - `uv tool install mipmem`
+   - `pipx install mipmem`
+   - Download `mipmem.pyz` from the official release page.
+4. **Run One-Line Join (Ask First):**
+   ```bash
+   mipmem join <vault_remote_url> --host <new-host-id>
+   ```
+   Optional flags: `--locale vi|en`, `--no-sync-on-stop`, `--adopt-host`, `--vault <dir>`.
+
+## Sync Behavior & Optional Exit-Flush Shell Wrapper
+
+- By default `mipmem join` enables `sync.auto_sync_on_stop = true` in `~/.config/mipmem/config.toml`
+  so Stop hooks flush host shards asynchronously.
+- On Linux/macOS shells where an interactive CLI may exit quickly, users may optionally add an
+  exit-flush shell wrapper calling `mipmem sync --if-configured` after asking confirmation.
+"""
+
+DEFAULT_VAULT_README_MD = """# MipMem Multi-Host Vault
+
+This private repository stores sharded cross-machine memory managed by `mipmem`.
+
+## Directory Layout
+
+- `hosts/<host_id>/` - Single-writer sessions, `host_meta.json`, `events/mutations.jsonl`,
+  and local sub-app telemetry for one machine.
+- `shared/brainstorms/by-host/<host_id>/` - Lossless brainstorm Markdown and `.meta.json` shards.
+- `shared/pinned_global.md` - Shared global memory notes across machines.
+- `.cache/` - Local derived SQLite FTS5 index and sync state (always gitignored).
+
+## Join This Vault From Another Machine
+
+1. Install `mipmem` (`uv tool install mipmem`, `pipx install mipmem`, or `mipmem.pyz`).
+2. Run:
+
+```bash
+mipmem join <vault_remote_url> --host <new-host-id>
+```
+
+Use `--adopt-host` only when intentionally reclaiming an existing `hosts/<host_id>/` directory.
+Run `mipmem init --refresh-guide` to explicitly regenerate `AGENTS.md` and `README.md`.
+"""
+
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
 
@@ -249,6 +316,54 @@ def _write_vault_file_internal(
     return target
 
 
+# @para-doc [#csa-vault-onboarding-guides]
+def ensure_vault_onboarding_guides(
+    vault_root: Union[str, Path],
+    *,
+    refresh: bool = False,
+    home_dir: Optional[Path] = None,
+    logger: Optional[RotatingJsonLogger] = None,
+) -> list[str]:
+    """Write host-agnostic AGENTS.md and README.md at vault root (write-if-missing default)."""
+    root_candidate = Path(vault_root).expanduser()
+    if root_candidate.is_symlink():
+        raise MipmemError(
+            VAULT_PATH_TRAVERSAL,
+            "Security block: vault root cannot be a symlink.",
+        )
+    root_resolved = root_candidate.resolve()
+    _ensure_secure_dir(root_resolved, root_resolved)
+
+    guides: tuple[tuple[str, str], ...] = (
+        ("AGENTS.md", DEFAULT_VAULT_AGENTS_MD),
+        ("README.md", DEFAULT_VAULT_README_MD),
+    )
+    written: list[str] = []
+    for rel_name, template in guides:
+        target = _resolve_safe_vault_target(root_resolved, rel_name)
+        if refresh or not target.exists():
+            _write_vault_file_internal(
+                root_resolved,
+                rel_name,
+                template,
+                home_dir=home_dir,
+                logger=logger,
+            )
+            written.append(rel_name)
+
+    if written and logger is not None:
+        logger.log_event(
+            "INFO",
+            "vault",
+            CP_VLT_01,
+            details={
+                "action": "refresh_guides" if refresh else "write_guides",
+                "written": written,
+            },
+        )
+    return written
+
+
 # @para-doc [#csa-vault-host-init]
 def init_vault(
     vault_root: Union[str, Path],
@@ -332,6 +447,13 @@ def init_vault(
             home_dir=home_dir,
             logger=logger,
         )
+
+    ensure_vault_onboarding_guides(
+        root_resolved,
+        refresh=False,
+        home_dir=home_dir,
+        logger=logger,
+    )
 
     return VaultLayout(
         vault_root=root_resolved,
