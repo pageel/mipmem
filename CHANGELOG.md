@@ -7,6 +7,14 @@ All notable changes to `mipmem` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-11-26
+
+### Fixed
+
+- **`mipmem init` & `--refresh-guide` Existing `host_id` Preservation (`cli_commands.py`):**
+  - Updated `_handle_init()` to load an existing `config.toml` before calling `init_vault()` and preserve a valid configured `core.host_id` whenever `--host` is omitted (preventing `mipmem init --refresh-guide` or re-running `mipmem init` from overwriting a custom `host_id` with `default_host_id()` or creating a spurious `hosts/<default>/` shard).
+  - Preserved explicit `--host <id>` overrides and `default_host_id()` fallback on fresh environments without an existing `config.toml`; added isolated 4-scenario regression tests in `tests/test_cli.py`.
+
 ## [1.1.0] - 2026-11-26
 
 ### Added
