@@ -161,14 +161,34 @@ def _coerce_config_value(
 def _handle_init(args: argparse.Namespace, json_mode: bool) -> int:
     """Initialize config.toml and sharded multi-host vault layout."""
     from mipmem.config import default_config, load_config, save_config
-    from mipmem.core.diagnostics import RotatingJsonLogger
-    from mipmem.core.vault import ensure_vault_onboarding_guides, init_vault
+    from mipmem.core.diagnostics import MipmemError, RotatingJsonLogger
+    from mipmem.core.vault import (
+        ensure_vault_onboarding_guides,
+        init_vault,
+        validate_host_id,
+    )
 
     target_vault_arg: str | None = getattr(args, "vault", None)
     refresh_guide = bool(getattr(args, "refresh_guide", False))
     paths = _resolve_active_paths(target_vault_arg)
     logger = RotatingJsonLogger(log_path=paths.cache_dir / "mipmem.log")
-    layout = init_vault(paths.vault_dir, host_id=getattr(args, "host", None), logger=logger)
+
+    has_existing_config = paths.config_file.is_file()
+    cfg = load_config(paths.config_file) if has_existing_config else default_config()
+    explicit_host: str | None = getattr(args, "host", None)
+    effective_host: str | None = explicit_host
+    if effective_host is None and has_existing_config:
+        core_existing = cfg.get("core")
+        raw_existing_host = (
+            core_existing.get("host_id") if isinstance(core_existing, dict) else None
+        )
+        if isinstance(raw_existing_host, str) and raw_existing_host.strip():
+            try:
+                effective_host = validate_host_id(raw_existing_host)
+            except MipmemError:
+                effective_host = None
+
+    layout = init_vault(paths.vault_dir, host_id=effective_host, logger=logger)
     guides_written: list[str] = []
     if refresh_guide:
         guides_written = ensure_vault_onboarding_guides(
@@ -177,7 +197,6 @@ def _handle_init(args: argparse.Namespace, json_mode: bool) -> int:
             logger=logger,
         )
 
-    cfg = load_config(paths.config_file) if paths.config_file.is_file() else default_config()
     core_tbl = cfg.setdefault("core", {})
     if isinstance(core_tbl, dict):
         core_tbl["host_id"] = layout.host_id

@@ -1024,6 +1024,94 @@ class TestCliDispatcher(unittest.TestCase):
                 VAULT_PATH_TRAVERSAL,
             )
 
+    def test_cli_init_preserves_existing_host_id_unless_overridden(self) -> None:
+        from mipmem.config import load_config
+        from mipmem.core.vault import default_host_id
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            cfg_dir = root / "cfg"
+            vault = root / "vault"
+            cache_dir = root / "cache"
+            sub_env = {
+                "PATH": os.environ.get("PATH", ""),
+                "MIPMEM_CONFIG_DIR": str(cfg_dir),
+                "MIPMEM_VAULT_DIR": str(vault),
+                "MIPMEM_CACHE_DIR": str(cache_dir),
+            }
+            cfg_file = cfg_dir / "config.toml"
+
+            with mock.patch.dict(os.environ, sub_env, clear=True):
+                buf_init = io.StringIO()
+                with contextlib.redirect_stdout(buf_init):
+                    rc_init = dispatch_full_cli(
+                        ["init", "--vault", str(vault), "--host", "host-custom", "--json"],
+                        time.perf_counter(),
+                    )
+                self.assertEqual(rc_init, 0)
+                self.assertEqual(json.loads(buf_init.getvalue())["host_id"], "host-custom")
+
+                # 1. init --refresh-guide without --host preserves host-custom
+                (vault / "AGENTS.md").write_text("# Old Guide\n", encoding="utf-8")
+                buf_ref = io.StringIO()
+                with contextlib.redirect_stdout(buf_ref):
+                    rc_ref = dispatch_full_cli(
+                        ["init", "--refresh-guide", "--json"],
+                        time.perf_counter(),
+                    )
+                self.assertEqual(rc_ref, 0)
+                ref_payload = json.loads(buf_ref.getvalue())
+                self.assertEqual(ref_payload["host_id"], "host-custom")
+                self.assertEqual(ref_payload["guides_written"], ["AGENTS.md", "README.md"])
+                self.assertEqual(load_config(cfg_file)["core"]["host_id"], "host-custom")
+                self.assertEqual(
+                    sorted(p.name for p in (vault / "hosts").iterdir() if p.is_dir()),
+                    ["host-custom"],
+                )
+
+                # 2. plain init without --host preserves host-custom
+                buf_plain = io.StringIO()
+                with contextlib.redirect_stdout(buf_plain):
+                    rc_plain = dispatch_full_cli(["init", "--json"], time.perf_counter())
+                self.assertEqual(rc_plain, 0)
+                self.assertEqual(json.loads(buf_plain.getvalue())["host_id"], "host-custom")
+                self.assertEqual(load_config(cfg_file)["core"]["host_id"], "host-custom")
+                self.assertEqual(
+                    sorted(p.name for p in (vault / "hosts").iterdir() if p.is_dir()),
+                    ["host-custom"],
+                )
+
+                # 3. explicit --host overrides configured core.host_id
+                buf_override = io.StringIO()
+                with contextlib.redirect_stdout(buf_override):
+                    rc_override = dispatch_full_cli(
+                        ["init", "--host", "host-override", "--json"],
+                        time.perf_counter(),
+                    )
+                self.assertEqual(rc_override, 0)
+                self.assertEqual(json.loads(buf_override.getvalue())["host_id"], "host-override")
+                self.assertEqual(load_config(cfg_file)["core"]["host_id"], "host-override")
+                self.assertEqual(
+                    sorted(p.name for p in (vault / "hosts").iterdir() if p.is_dir()),
+                    ["host-custom", "host-override"],
+                )
+
+            # 4. fresh environment without config.toml falls back to default_host_id()
+            fresh_env = {
+                "PATH": os.environ.get("PATH", ""),
+                "MIPMEM_CONFIG_DIR": str(root / "fresh-cfg"),
+                "MIPMEM_VAULT_DIR": str(root / "fresh-vault"),
+                "MIPMEM_CACHE_DIR": str(root / "fresh-cache"),
+            }
+            with mock.patch.dict(os.environ, fresh_env, clear=True):
+                buf_fresh = io.StringIO()
+                with contextlib.redirect_stdout(buf_fresh):
+                    rc_fresh = dispatch_full_cli(["init", "--json"], time.perf_counter())
+                self.assertEqual(rc_fresh, 0)
+                fresh_payload = json.loads(buf_fresh.getvalue())
+                self.assertEqual(fresh_payload["host_id"], default_host_id())
+                self.assertNotEqual(fresh_payload["host_id"], "workstation-alpha")
+
 
 if __name__ == "__main__":
     unittest.main()
