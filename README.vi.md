@@ -5,13 +5,13 @@
 
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with README.md, src/mipmem/, .github/workflows/ on 2026-11-25 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with README.md, src/mipmem/, .github/workflows/ on 2026-11-26 -->
 
 **Hệ thống Bộ nhớ Nhận thức Phân tầng 4 Lớp (`4-Layer Mipmapped Cognitive Memory`) thuần thư viện chuẩn Python `>= 3.9` (`dependencies = []`), `0` phụ thuộc ngoài, `0` chi phí token LLM, hỗ trợ tìm kiếm song ngữ Anh/Việt FTS5 `< 5ms`, đồng bộ đa máy không xung đột và giao thức Sub-App riêng tư từng máy.**
 
 ---
 
-## Điểm nổi bật (`v1.0.1`)
+## Điểm nổi bật (`v1.1.0`)
 
 - **Thuần Python `>= 3.9` Standard Library & `< 25ms` Hot-Path:** Đóng gói gọn trong PyPI package lẫn tệp thực thi đơn `.pyz`; nhánh nóng `health --json` và no-op hook chạy dưới `25ms` với zero import nặng.
 - **Mipmap 4 Tầng (`L0 → L3`) & Brainstorm AST Nguyên bản:**
@@ -70,7 +70,7 @@ Trỏ bất kỳ client MCP `stdio` nào (Antigravity, Claude Code, Cursor, Gemi
 ## Lệnh Slash `/mem` (0 Token LLM) & CLI Chính
 
 - **Trong phiên chat (`/mem ...`):** `/mem help`, `/mem status`, `/mem fleet`, `/mem sync [--pull-only|--push-only]`, `/mem recall <từ_khóa>`, `/mem list [1-10]`, `/mem bs [list|save|view|status]`, `/mem config [show|get|set]`, `/mem handoff [@host]`, cùng `/mem <app>` nếu cấu hình cục bộ trong `apps.d`.
-- **Dòng lệnh CLI (`mipmem ...`):** `init`, `config`, `health [--deep] [--json]`, `fleet [--json]`, `sync [--pull-only|--push-only|--detached|--if-configured] [--config <path>] [--json]`, `self-update [--check|--dry-run|--version <tag>] [--json]`, `migrate --from-v2`, `index`, `recall`, `bs`, `hook`, `mcp`.
+- **Dòng lệnh CLI (`mipmem ...`):** `init [--refresh-guide]`, `join <vault_remote_url> [--host <id>] [--adopt-host]`, `config`, `health [--deep] [--json]`, `fleet [--json]`, `sync [--pull-only|--push-only|--detached|--if-configured] [--config <path>] [--json]`, `self-update [--check|--dry-run|--version <tag>] [--json]`, `migrate --from-v2`, `index`, `recall`, `bs`, `hook`, `mcp`.
 
 ---
 
@@ -91,6 +91,17 @@ auto_sync_on_stop = true
 ```
 
 Nếu dùng Syncthing hoặc thư mục đồng bộ cục bộ, đặt `backend = "folder"` và trỏ `folder_path` tới thư mục chia sẻ bên ngoài Vault.
+
+### Gia nhập Máy mới trong 2 Bước (`AGENTS.md` + `mipmem join`)
+
+Mỗi Private Vault tự động chứa `AGENTS.md` và `README.md` chuẩn hóa không gắn thông tin máy (`mipmem init --refresh-guide` cho Vault tạo từ `v1.0.x`). Trên máy mới chỉ cần:
+
+```bash
+uv tool install mipmem
+mipmem join git@github.com:example-user/my-mipmem-vault.git --host my-laptop
+```
+
+Lệnh sẽ kiểm tra `hosts/*/` tránh trùng `host_id` (chỉ nhận lại khi truyền `--adopt-host`), bật `core.filemode=false`, cấu hình `config.toml`, dựng lại chỉ mục FTS5 và đồng bộ lần đầu.
 
 ### Wrapper Đồng bộ khi Thoát `/exit` trên Linux (Bash / Zsh)
 

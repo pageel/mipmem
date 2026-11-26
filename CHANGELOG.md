@@ -1,11 +1,31 @@
 # Changelog
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-25 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-26 -->
 
 All notable changes to `mipmem` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.1.0] - 2026-11-26
+
+### Added
+
+- **Self-Describing Private Vault Guides (`core/vault.py`, `sync/git_backend.py`):**
+  - Added host-agnostic, English-first constants `DEFAULT_VAULT_AGENTS_MD` and `DEFAULT_VAULT_README_MD` plus `ensure_vault_onboarding_guides()` (`write-if-missing` inside `init_vault()`, explicit override via `mipmem init --refresh-guide`), including a **Safety Guard** requiring explicit user confirmation before installs or shell RC edits and logging `CP-VLT-01`.
+  - Updated `GitSyncBackend._stage_and_commit_single_writer()` to stage root `AGENTS.md` and `README.md` when created or refreshed locally without silently overwriting them during `mipmem sync`.
+- **One-Line Conflict-Safe Multi-Host Onboarding CLI (`mipmem join <vault_remote_url>`):**
+  - Added `validate_git_remote_url()` (blocking empty strings, placeholders, control characters, and leading `-` CLI flag injection) and `join_git_vault()` in `src/mipmem/sync/git_backend.py` using `shell=False`, `GIT_TERMINAL_PROMPT=0`, `--`, and `core.filemode=false`, handling empty unborn remotes cleanly, rebuilding `.cache/global_fts.db`, and logging `CP-SYN-01` (`direction: "join"`).
+  - Enforced `JOIN_VAULT_OCCUPIED` (blocking occupied non-matching directories) and `JOIN_HOST_CONFLICT` (scanning `hosts/*/` to prevent duplicate host writes unless `--adopt-host` is explicitly passed); registered lazy `mipmem join` subcommand in `src/mipmem/cli_commands.py` (`--host`, `--adopt-host`, `--locale`, `--no-sync-on-stop`, `--skip-sync`, `--vault`, `--config`, `--json`) while keeping `cli.py` fast-path untouched.
+  - Extended `core/diagnostics.py` with `S5_ERROR_CODES` (`JOIN_HOST_CONFLICT`, `JOIN_VAULT_OCCUPIED`, raising `ALL_ERROR_CODES` from `25` to `27`).
+
+### Fixed
+
+- **`BUG-02` Redactor Word-Boundary & Legacy `bs_id` Auto-Heal (`core/redactor.py`, `core/brainstorms.py`):**
+  - Added `(?<![A-Za-z0-9])` lookbehind guards to `_TOKEN_RULES` (preventing false-positive `OPENAI_KEY` redaction on compound identifiers such as `disk-...` while preserving 100% real token redaction).
+  - Added read-only in-memory `bs_id` auto-heal in `_build_shard_from_disk()` falling back to `md_path.stem` when legacy `.meta.json` files contain invalid or redacted IDs without mutating foreign host shards (`MP5`).
+- **`BUG-03` Antigravity IDE Envelope Wrapper Stripping (`adapters/agy_ide.py`):**
+  - Added `_strip_ide_prompt_wrappers()` in `_extract_user_text()` to strip root-level `<USER_REQUEST>...</USER_REQUEST>` and trailing `<ADDITIONAL_METADATA>...</ADDITIONAL_METADATA>` envelopes cleanly while leaving prose and fenced code blocks intact.
 
 ## [1.0.1] - 2026-11-25
 
