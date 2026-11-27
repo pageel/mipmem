@@ -18,6 +18,10 @@ _INIT_VERSION_RE = re.compile(
 )
 _SHA256_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?([^\s].*?)\s*$")
 _SECTION_RE = re.compile(r"^\[([^\[\]]+)\]\s*$")
+_HEADING_VERSION_RE = re.compile(r"^#{1,6}\s+.*`v(\d+\.\d+\.\d+)`")
+_LAYOUT_TARGETS = ("plugin.json", "CHANGELOG.md", "bin/mipmem.pyz")
+_LAYOUT_VERSION_RE = re.compile(r"(?:\(v|through\s+v)(\d+\.\d+\.\d+)\b")
+_CHANGELOG_TOP_RE = re.compile(r"^##\s+\[(\d+\.\d+\.\d+)\]")
 
 
 def _load_toml_fallback(text: str) -> dict[str, Any]:
@@ -251,6 +255,53 @@ def _audit_dist_dir(dist_dir: Path, issues: list[str]) -> None:
             issues.append("dist/mipmem.pyz: invalid-zipapp-archive")
 
 
+def _audit_docs_versions(
+    repo_root: Path,
+    expected_version: Optional[str],
+    issues: list[str],
+) -> None:
+    """Verify README headings, Repository Layout manifests, and top CHANGELOG match expected."""
+    if not expected_version:
+        return
+
+    for rel_name in ("README.md", "README.vi.md"):
+        doc_path = repo_root / rel_name
+        if not doc_path.is_file():
+            continue
+        for line_no, line in enumerate(doc_path.read_text(encoding="utf-8").splitlines(), start=1):
+            heading_match = _HEADING_VERSION_RE.match(line)
+            if heading_match:
+                found = heading_match.group(1)
+                if found != expected_version:
+                    issues.append(
+                        f"{rel_name}:{line_no}: stale-version-reference "
+                        f"(found v{found}, expected v{expected_version})"
+                    )
+            if any(target in line for target in _LAYOUT_TARGETS):
+                for layout_match in _LAYOUT_VERSION_RE.finditer(line):
+                    found = layout_match.group(1)
+                    if found != expected_version:
+                        issues.append(
+                            f"{rel_name}:{line_no}: stale-version-reference "
+                            f"(found v{found}, expected v{expected_version})"
+                        )
+
+    changelog_path = repo_root / "CHANGELOG.md"
+    if changelog_path.is_file():
+        for line_no, line in enumerate(
+            changelog_path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            top_match = _CHANGELOG_TOP_RE.match(line)
+            if top_match:
+                found = top_match.group(1)
+                if found != expected_version:
+                    issues.append(
+                        f"CHANGELOG.md:{line_no}: changelog-version-mismatch "
+                        f"(found {found}, expected {expected_version})"
+                    )
+                break
+
+
 # @para-doc [#csa-release-readiness-validator]
 def validate_release_readiness(
     repo_root: Path,
@@ -264,6 +315,7 @@ def validate_release_readiness(
     issues: list[str] = []
     pyproject_version = _audit_pyproject(root, issues)
     _audit_versions(root, pyproject_version, issues)
+    _audit_docs_versions(root, pyproject_version, issues)
     _audit_workflows(root, issues)
     if dist_dir is not None:
         _audit_dist_dir(dist_dir, issues)

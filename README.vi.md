@@ -5,13 +5,13 @@
 
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with README.md, src/mipmem/, .github/workflows/ on 2026-11-26 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with README.md, src/mipmem/, .github/workflows/ on 2026-11-27 -->
 
 **Hệ thống Bộ nhớ Nhận thức Phân tầng 4 Lớp (`4-Layer Mipmapped Cognitive Memory`) thuần thư viện chuẩn Python `>= 3.9` (`dependencies = []`), `0` phụ thuộc ngoài, `0` chi phí token LLM, hỗ trợ tìm kiếm song ngữ Anh/Việt FTS5 `< 5ms`, đồng bộ đa máy không xung đột và giao thức Sub-App riêng tư từng máy.**
 
 ---
 
-## Điểm nổi bật (`v1.1.0`)
+## Điểm nổi bật (`v1.1.2`)
 
 - **Thuần Python `>= 3.9` Standard Library & `< 25ms` Hot-Path:** Đóng gói gọn trong PyPI package lẫn tệp thực thi đơn `.pyz`; nhánh nóng `health --json` và no-op hook chạy dưới `25ms` với zero import nặng.
 - **Mipmap 4 Tầng (`L0 → L3`) & Brainstorm AST Nguyên bản:**
@@ -69,7 +69,7 @@ Trỏ bất kỳ client MCP `stdio` nào (Antigravity, Claude Code, Cursor, Gemi
 
 ## Lệnh Slash `/mem` (0 Token LLM) & CLI Chính
 
-- **Trong phiên chat (`/mem ...`):** `/mem help`, `/mem status`, `/mem fleet`, `/mem sync [--pull-only|--push-only]`, `/mem recall <từ_khóa>`, `/mem list [1-10]`, `/mem bs [list|save|view|status]`, `/mem config [show|get|set]`, `/mem handoff [@host]`, cùng `/mem <app>` nếu cấu hình cục bộ trong `apps.d`.
+- **Trong phiên chat (`/mem ...` hoặc alias plugin `/mipmem:mem ...`):** `/mem help`, `/mem status`, `/mem fleet`, `/mem sync [--pull-only|--push-only]`, `/mem recall <từ_khóa>`, `/mem list [1-10]`, `/mem bs [list|save|view|status]`, `/mem config [show|get|set]`, `/mem handoff [@host]`, cùng `/mem <app>` nếu cấu hình cục bộ trong `apps.d`.
 - **Dòng lệnh CLI (`mipmem ...`):** `init [--refresh-guide]`, `join <vault_remote_url> [--host <id>] [--adopt-host]`, `config`, `health [--deep] [--json]`, `fleet [--json]`, `sync [--pull-only|--push-only|--detached|--if-configured] [--config <path>] [--json]`, `self-update [--check|--dry-run|--version <tag>] [--json]`, `migrate --from-v2`, `index`, `recall`, `bs`, `hook`, `mcp`.
 
 ---
