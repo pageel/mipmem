@@ -215,7 +215,7 @@ class TestPluginManifestValidatorAndBundle(unittest.TestCase):
                 input=json.dumps(
                     {
                         "conversationId": "c-iso",
-                        "invocationNum": 1,
+                        "invocationNum": 0,
                         "lastUserInput": "/mem help",
                         "workspacePaths": [str(sandbox_home)],
                         "transcriptPath": str(sandbox_home / "antigravity" / "transcript.jsonl"),

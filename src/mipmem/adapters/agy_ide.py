@@ -9,6 +9,7 @@ import time
 from typing import Any, Optional, Union
 
 from mipmem.adapters.base import NormalizedConversation, detect_surface_from_path
+from mipmem.adapters.hook_io import is_slash_mem_command
 from mipmem.core.diagnostics import (
     ADAPTER_READ_FAILED,
     CP_ADP_01,
@@ -416,7 +417,7 @@ def extract_ide_conversation(
         except OSError:
             last_modified = ""
 
-    non_slash_prompts = [p for p in prompts if not p.lstrip().startswith("/mem")]
+    non_slash_prompts = [p for p in prompts if not is_slash_mem_command(p)]
     resolved_title = title or (
         non_slash_prompts[0][:120]
         if non_slash_prompts

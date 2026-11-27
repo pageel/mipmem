@@ -8,6 +8,7 @@ import re
 import shlex
 from typing import Any, Optional, Union
 
+from mipmem.adapters.hook_io import SLASH_MEM_PREFIXES
 from mipmem.config import default_config, load_config, resolve_paths, save_config
 from mipmem.core.brainstorms import (
     MAX_BRAINSTORM_BYTES,
@@ -729,7 +730,7 @@ def dispatch_slash_mem(
             )
         return f"Invalid `/mem` command syntax: {exc}\n\n{_render_help()}"
 
-    if tokens and tokens[0].lower() == "/mem":
+    if tokens and tokens[0].lower() in SLASH_MEM_PREFIXES:
         tokens = tokens[1:]
     if not tokens or tokens[0].lower() in ("help", "-h", "--help"):
         return _render_help()

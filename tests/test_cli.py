@@ -444,7 +444,7 @@ class TestCliDispatcher(unittest.TestCase):
             sub_env["PYTHONPATH"] = str(REPO_ROOT / "src")
             sub_env.update(env_map)
 
-            # 1. Fast hook skip path (invocationNum=2) bypasses cli_commands, argparse & sqlite3
+            # 1. Fast hook skip paths (1, 2, -1) bypass cli_commands, argparse & sqlite3
             skip_probe = (
                 "import sys; import mipmem.cli as cli; "
                 "rc = cli.main(['hook', 'pre-invocation']); "
@@ -453,41 +453,62 @@ class TestCliDispatcher(unittest.TestCase):
                 "assert 'argparse' not in sys.modules; "
                 "assert 'sqlite3' not in sys.modules"
             )
-            proc_skip = subprocess.run(
-                [sys.executable, "-c", skip_probe],
-                input=json.dumps({"conversationId": "c1", "invocationNum": 2}),
-                env=sub_env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc_skip.returncode, 0, msg=proc_skip.stderr + proc_skip.stdout)
-            self.assertEqual(json.loads(proc_skip.stdout), {})
+            for skip_num in (1, 2, -1):
+                proc_skip = subprocess.run(
+                    [sys.executable, "-c", skip_probe],
+                    input=json.dumps({"conversationId": "c1", "invocationNum": skip_num}),
+                    env=sub_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(proc_skip.returncode, 0, msg=proc_skip.stderr + proc_skip.stdout)
+                self.assertEqual(json.loads(proc_skip.stdout), {})
 
-            # 2. PreInvocation /mem status via cli.main(['hook', 'pre-invocation'])
-            slash_payload = json.dumps(
-                {
-                    "conversationId": "c1",
-                    "invocationNum": 1,
-                    "lastUserInput": "/mem status",
-                    "workspacePaths": [str(ws_dir)],
-                    "transcriptPath": "/tmp/sb/.gemini/antigravity-cli/brain/c1/t.jsonl",
-                }
+            # 2. PreInvocation /mem & /mipmem:mem at invocationNum=0 (plus non-key guard check)
+            for cmd in ("/mem status", "/mipmem:mem status"):
+                slash_payload = json.dumps(
+                    {
+                        "conversationId": "c1",
+                        "invocationNum": 0,
+                        "lastUserInput": cmd,
+                        "note": '"invocationNum":1',
+                        "workspacePaths": [str(ws_dir)],
+                        "transcriptPath": "/tmp/sb/.gemini/antigravity-cli/brain/c1/t.jsonl",
+                    }
+                )
+                proc_slash = subprocess.run(
+                    [sys.executable, "-m", "mipmem", "hook", "pre-invocation"],
+                    input=slash_payload,
+                    env=sub_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    proc_slash.returncode, 0, msg=proc_slash.stderr + proc_slash.stdout
+                )
+                slash_data = json.loads(proc_slash.stdout)
+                self.assertEqual(slash_data["terminationBehavior"], "terminate")
+                self.assertIn(
+                    "host-hook",
+                    slash_data["injectSteps"][0]["systemMessage"]["metadata"]["user_markdown"],
+                )
+
+            # Non-key substring inside a string field must NOT trigger false fast-skip
+            from mipmem.cli import _fast_flat_skip
+
+            self.assertFalse(
+                _fast_flat_skip(
+                    "pre-invocation",
+                    b'{"note": "\\"invocationNum\\":1", "invocationNum": 0}',
+                )
             )
-            proc_slash = subprocess.run(
-                [sys.executable, "-m", "mipmem", "hook", "pre-invocation"],
-                input=slash_payload,
-                env=sub_env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc_slash.returncode, 0, msg=proc_slash.stderr + proc_slash.stdout)
-            slash_data = json.loads(proc_slash.stdout)
-            self.assertEqual(slash_data["terminationBehavior"], "terminate")
-            self.assertIn(
-                "host-hook",
-                slash_data["injectSteps"][0]["systemMessage"]["metadata"]["user_markdown"],
+            self.assertFalse(
+                _fast_flat_skip(
+                    "pre-invocation",
+                    b'{"fake_invocationNum":1,"lastUserInput":"/mem status"}',
+                )
             )
 
             # 3. Stop hook with TERMINAL_CUSTOM_HOOK returns {} cleanly

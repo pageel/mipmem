@@ -577,6 +577,50 @@ class TestAntigravityIdeAdapter(unittest.TestCase):
             assert conv is not None
             self.assertEqual(conv.recent_prompts, ["Fix redactor word boundary bug"])
 
+    def test_ide_adapter_skips_plugin_qualified_slash_mem_prompts_for_title(self) -> None:
+        from mipmem.adapters.agy_ide import extract_ide_conversation
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            logs_dir = (
+                Path(tmp_dir)
+                / ".gemini"
+                / "antigravity"
+                / "brain"
+                / "conv-slash-title-01"
+                / ".system_generated"
+                / "logs"
+            )
+            logs_dir.mkdir(parents=True)
+            compact_path = logs_dir / "transcript.jsonl"
+            lines = [
+                json.dumps(
+                    {
+                        "type": "USER_INPUT",
+                        "text": "/mem status",
+                        "timestamp": "2026-11-27T01:00:00.000Z",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "USER_INPUT",
+                        "text": "/mipmem:mem fleet",
+                        "timestamp": "2026-11-27T01:01:00.000Z",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "USER_INPUT",
+                        "text": "/memory leak investigation",
+                        "timestamp": "2026-11-27T01:02:00.000Z",
+                    }
+                ),
+            ]
+            compact_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            conv = extract_ide_conversation(compact_path)
+            self.assertIsNotNone(conv)
+            assert conv is not None
+            self.assertEqual(conv.title, "/memory leak investigation")
+
 
 if __name__ == "__main__":
     unittest.main()
