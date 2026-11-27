@@ -333,6 +333,72 @@ class TestVerifyReleaseReadiness(unittest.TestCase):
                 msg=str(dist_issues),
             )
 
+    def test_detects_stale_readme_and_changelog_versions_while_ignoring_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = _create_valid_release_repo(Path(tmp_dir))
+            (repo / "README.md").write_text(
+                "# MipMem\n\n"
+                "## Key Architecture (`v0.9.0`)\n\n"
+                "Legacy v1.0.x vaults and v2.2 flat directories remain supported.\n\n"
+                "```text\n"
+                "├── plugin.json # Native Antigravity Plugin manifest (v0.9.9)\n"
+                "├── CHANGELOG.md # Keep a Changelog history through v0.9.9\n"
+                "├── bin/mipmem.pyz # Deterministic single-file zipapp binary (v0.9.9)\n"
+                "```\n",
+                encoding="utf-8",
+            )
+            (repo / "README.vi.md").write_text(
+                "# MipMem\n\n"
+                "## Diem noi bat (`v0.9.0`)\n\n"
+                "Ho tro v1.0.x va di tru tu v2.2.\n",
+                encoding="utf-8",
+            )
+            (repo / "CHANGELOG.md").write_text(
+                "# Changelog\n\n"
+                "## [0.9.9] - 2026-11-01\n\n"
+                "- Older release entry.\n",
+                encoding="utf-8",
+            )
+
+            issues = validate_release_readiness(repo, dist_dir=repo / "dist")
+            stale_hits = [i for i in issues if "stale-version-reference" in i]
+            changelog_hits = [i for i in issues if "changelog-version-mismatch" in i]
+
+            self.assertEqual(len(stale_hits), 5, msg=str(issues))
+            self.assertEqual(len(changelog_hits), 1, msg=str(issues))
+            self.assertFalse(
+                any("v1.0.x" in i or "v2.2" in i for i in issues),
+                msg=str(issues),
+            )
+
+            # Aligning headings, layout manifest lines, and CHANGELOG clears all issues.
+            (repo / "README.md").write_text(
+                "# MipMem\n\n"
+                "## Key Architecture (`v1.0.0`)\n\n"
+                "Legacy v1.0.x vaults and v2.2 flat directories remain supported.\n\n"
+                "```text\n"
+                "├── plugin.json # Native Antigravity Plugin manifest (v1.0.0)\n"
+                "├── CHANGELOG.md # Keep a Changelog history through v1.0.0\n"
+                "├── bin/mipmem.pyz # Deterministic single-file zipapp binary (v1.0.0)\n"
+                "```\n",
+                encoding="utf-8",
+            )
+            (repo / "README.vi.md").write_text(
+                "# MipMem\n\n"
+                "## Diem noi bat (`v1.0.0`)\n\n"
+                "Ho tro v1.0.x va di tru tu v2.2.\n",
+                encoding="utf-8",
+            )
+            (repo / "CHANGELOG.md").write_text(
+                "# Changelog\n\n"
+                "## [1.0.0] - 2026-11-25\n\n"
+                "- Initial release.\n\n"
+                "## [0.9.9] - 2026-11-01\n\n"
+                "- Older release entry.\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(validate_release_readiness(repo, dist_dir=repo / "dist"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

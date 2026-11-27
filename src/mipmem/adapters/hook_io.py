@@ -15,6 +15,21 @@ from mipmem.core.diagnostics import (
 )
 
 MAX_HOOK_STDIN_BYTES = 4 * 1024 * 1024
+SLASH_MEM_PREFIXES: tuple[str, ...] = ("/mem", "/mipmem:mem")
+
+
+def is_slash_mem_command(raw_input: str) -> bool:
+    """Return True when raw_input invokes `/mem` or plugin-qualified `/mipmem:mem`."""
+    stripped = str(raw_input or "").lstrip()
+    if not stripped:
+        return False
+    lowered = stripped.lower()
+    for prefix in SLASH_MEM_PREFIXES:
+        if lowered == prefix:
+            return True
+        if lowered.startswith(prefix) and lowered[len(prefix)].isspace():
+            return True
+    return False
 
 
 def _detect_surface(transcript_path: Optional[Any]) -> str:
@@ -238,15 +253,15 @@ def _resolve_hook_runtime(
 
 
 def _safe_invocation_num(raw: Any) -> int:
-    """Coerce hook invocationNum into a positive integer defaulting to 1."""
+    """Coerce hook invocationNum into an integer defaulting to 0 (0-indexed first step)."""
     if isinstance(raw, bool) or raw is None:
-        return 1
+        return 0
     if isinstance(raw, int):
         return raw
     try:
         return int(str(raw).strip())
     except ValueError:
-        return 1
+        return 0
 
 
 # @para-doc [#csa-hook-session-start]
@@ -353,8 +368,8 @@ def handle_pre_invocation(
     """Handle PreInvocation: /mem 0-token user_markdown intercept and active L1 paging."""
     started = time.perf_counter()
     surface = _detect_surface(payload.get("transcriptPath"))
-    invocation_num = _safe_invocation_num(payload.get("invocationNum", 1))
-    if invocation_num != 1:
+    invocation_num = _safe_invocation_num(payload.get("invocationNum", 0))
+    if invocation_num != 0:
         _emit_hook_checkpoint(
             logger,
             level="INFO",
@@ -387,7 +402,7 @@ def handle_pre_invocation(
         return {}
 
     user_input = str(payload.get("lastUserInput") or "").strip()
-    if user_input == "/mem" or user_input.startswith("/mem "):
+    if is_slash_mem_command(user_input):
         from mipmem.adapters.slash_mem import dispatch_slash_mem
 
         markdown_body = dispatch_slash_mem(
@@ -408,6 +423,7 @@ def handle_pre_invocation(
             action="slash_mem",
             tokens_injected=0,
             duration_ms=(time.perf_counter() - started) * 1000.0,
+            details_extra={"invocation_num": invocation_num},
         )
         return render_user_markdown_response(markdown_body)
 
@@ -509,6 +525,7 @@ def handle_pre_invocation(
         action="injected_l1",
         tokens_injected=est_tokens,
         duration_ms=(time.perf_counter() - started) * 1000.0,
+        details_extra={"invocation_num": invocation_num},
     )
     return render_system_injection(rendered_l1)
 

@@ -467,7 +467,7 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
             env = self._build_env(Path(tmp_dir))
             logger = RotatingJsonLogger(log_path=env["log"])
 
-            # /mem works on BOTH CLI & IDE and on BOTH active & passive workspaces with 0 LLM tokens
+            # /mem works on BOTH CLI & IDE and on BOTH active & passive workspaces at step 0
             for surface_path, ws_key in (
                 ("/tmp/sb/.gemini/antigravity-cli/brain/c1/t.jsonl", "active"),
                 ("/tmp/sb/.gemini/antigravity/brain/c2/t.jsonl", "passive"),
@@ -475,7 +475,7 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
                 res = handle_pre_invocation(
                     {
                         "conversationId": "c-slash",
-                        "invocationNum": 1,
+                        "invocationNum": 0,
                         "lastUserInput": "/mem status",
                         "workspacePaths": [str(env[ws_key])],
                         "transcriptPath": surface_path,
@@ -489,11 +489,28 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
                 self.assertEqual(step_msg["systemMessage"], "")
                 self.assertIn("host-alpha", step_msg["metadata"]["user_markdown"])
 
+            # Missing or malformed invocationNum defaults to 0 (processed on step 0)
+            for raw_inv in (None, True, False, "invalid"):
+                payload_default: dict[str, object] = {
+                    "conversationId": "c-default-inv",
+                    "lastUserInput": "/mem status",
+                    "workspacePaths": [str(env["active"])],
+                }
+                if raw_inv is not None:
+                    payload_default["invocationNum"] = raw_inv
+                res_default = handle_pre_invocation(
+                    payload_default,
+                    vault_root=env["vault"],
+                    config_file=env["config"],
+                    logger=logger,
+                )
+                self.assertEqual(res_default.get("terminationBehavior"), "terminate")
+
             # Disabled workspace blocks /mem too
             res_dis = handle_pre_invocation(
                 {
                     "conversationId": "c-dis",
-                    "invocationNum": 1,
+                    "invocationNum": 0,
                     "lastUserInput": "/mem status",
                     "workspacePaths": [str(env["disabled"])],
                 },
@@ -503,25 +520,26 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
             )
             self.assertEqual(res_dis, {})
 
-            # invocationNum > 1 returns {} immediately
-            res_turn2 = handle_pre_invocation(
-                {
-                    "conversationId": "c-slash",
-                    "invocationNum": 2,
-                    "lastUserInput": "/mem status",
-                    "workspacePaths": [str(env["active"])],
-                },
-                vault_root=env["vault"],
-                config_file=env["config"],
-                logger=logger,
-            )
-            self.assertEqual(res_turn2, {})
+            # invocationNum != 0 (1, 2, -1) returns {} immediately
+            for skip_num in (1, 2, -1):
+                res_turn_skip = handle_pre_invocation(
+                    {
+                        "conversationId": "c-slash",
+                        "invocationNum": skip_num,
+                        "lastUserInput": "/mem status",
+                        "workspacePaths": [str(env["active"])],
+                    },
+                    vault_root=env["vault"],
+                    config_file=env["config"],
+                    logger=logger,
+                )
+                self.assertEqual(res_turn_skip, {})
 
             # Passive workspace suppresses automatic L1 injection on normal prompts
             res_pas_prompt = handle_pre_invocation(
                 {
                     "conversationId": "c-passive-normal",
-                    "invocationNum": 1,
+                    "invocationNum": 0,
                     "lastUserInput": "FTS5 bigram recall architecture",
                     "workspacePaths": [str(env["passive"])],
                 },
@@ -535,7 +553,7 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
             res_l1_first = handle_pre_invocation(
                 {
                     "conversationId": "c-topic-1",
-                    "invocationNum": 1,
+                    "invocationNum": 0,
                     "lastUserInput": "FTS5 bigram scoring weights",
                     "workspacePaths": [str(env["active"])],
                 },
@@ -551,7 +569,7 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
             res_l1_repeat = handle_pre_invocation(
                 {
                     "conversationId": "c-topic-1",
-                    "invocationNum": 1,
+                    "invocationNum": 0,
                     "lastUserInput": "FTS5 bigram scoring weights",
                     "workspacePaths": [str(env["active"])],
                 },
@@ -565,7 +583,7 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
             res_l1_cue = handle_pre_invocation(
                 {
                     "conversationId": "c-topic-1",
-                    "invocationNum": 1,
+                    "invocationNum": 0,
                     "lastUserInput": "recall FTS5 bigram scoring weights",
                     "workspacePaths": [str(env["active"])],
                 },
@@ -574,6 +592,31 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
                 logger=logger,
             )
             self.assertIn("injectSteps", res_l1_cue)
+
+            # Verify CP-HK-01 logs accurate invocation_num on slash_mem, injected_l1, and skipped
+            log_entries = [
+                json.loads(line)
+                for line in env["log"].read_text(encoding="utf-8").strip().splitlines()
+            ]
+            pre_entries = [
+                e for e in log_entries
+                if e.get("event") == CP_HK_01
+                and e.get("details", {}).get("event") == "pre-invocation"
+            ]
+            slash_logs = [
+                e["details"] for e in pre_entries if e["details"].get("action") == "slash_mem"
+            ]
+            l1_logs = [
+                e["details"] for e in pre_entries if e["details"].get("action") == "injected_l1"
+            ]
+            fast_skip_logs = [
+                e["details"] for e in pre_entries if e["details"].get("policy") == "skipped_fast"
+            ]
+            self.assertTrue(slash_logs)
+            self.assertTrue(all(d.get("invocation_num") == 0 for d in slash_logs))
+            self.assertTrue(l1_logs)
+            self.assertTrue(all(d.get("invocation_num") == 0 for d in l1_logs))
+            self.assertEqual([d.get("invocation_num") for d in fast_skip_logs], [1, 2, -1])
 
 
 class TestStopHookHarvester(unittest.TestCase):
@@ -1181,6 +1224,91 @@ class TestSubAppFleetAndL0HookIntegration(unittest.TestCase):
                     / "conv-slash-sync-1.md"
                 ).is_file()
             )
+
+    def test_plugin_qualified_slash_mem_prefix_intercepts_at_zero_tokens(self) -> None:
+        from mipmem.adapters.hook_io import handle_pre_invocation, is_slash_mem_command
+        from mipmem.adapters.slash_mem import dispatch_slash_mem
+        from mipmem.config import default_config, save_config
+        from mipmem.core.vault import init_vault
+
+        for valid in (
+            "/mem",
+            "/mem fleet",
+            "/MEM status",
+            "/mipmem:mem",
+            "/mipmem:mem fleet",
+            "/MIPMEM:MEM status",
+            "  /mipmem:mem\tstatus",
+        ):
+            self.assertTrue(is_slash_mem_command(valid), f"Expected match for {valid!r}")
+
+        for invalid in (
+            "",
+            "   ",
+            "hello /mem",
+            "/memory",
+            "/mipmem:memory",
+            "/mipmem:mem-extra",
+        ):
+            self.assertFalse(is_slash_mem_command(invalid), f"Unexpected match for {invalid!r}")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            vault_dir = root / "vault"
+            cfg_file = root / "config.toml"
+            ws_dir = root / "ws"
+            ws_dir.mkdir()
+            init_vault(vault_dir, host_id="host-alpha")
+            cfg = default_config()
+            cfg["core"]["host_id"] = "host-alpha"
+            cfg["core"]["vault_path"] = str(vault_dir)
+            save_config(cfg, cfg_file)
+
+            self.assertEqual(
+                dispatch_slash_mem("/mipmem:mem", vault_root=vault_dir, config_file=cfg_file),
+                dispatch_slash_mem("/mem help", vault_root=vault_dir, config_file=cfg_file),
+            )
+            self.assertEqual(
+                dispatch_slash_mem(
+                    "/mipmem:mem status", vault_root=vault_dir, config_file=cfg_file
+                ),
+                dispatch_slash_mem("/mem status", vault_root=vault_dir, config_file=cfg_file),
+            )
+            self.assertEqual(
+                dispatch_slash_mem(
+                    "/mipmem:mem fleet", vault_root=vault_dir, config_file=cfg_file
+                ),
+                dispatch_slash_mem("/mem fleet", vault_root=vault_dir, config_file=cfg_file),
+            )
+
+            for cmd in ("/mipmem:mem status", "/mipmem:mem fleet"):
+                res = handle_pre_invocation(
+                    {
+                        "conversationId": "c-plugin-prefix",
+                        "invocationNum": 0,
+                        "lastUserInput": cmd,
+                        "workspacePaths": [str(ws_dir)],
+                        "transcriptPath": "/tmp/sb/.gemini/antigravity/brain/c1/t.jsonl",
+                    },
+                    vault_root=vault_dir,
+                    config_file=cfg_file,
+                )
+                self.assertEqual(res.get("terminationBehavior"), "terminate")
+                step_msg = res["injectSteps"][0]["systemMessage"]
+                self.assertEqual(step_msg["systemMessage"], "")
+                self.assertIn("host-alpha", step_msg["metadata"]["user_markdown"])
+
+            non_match = handle_pre_invocation(
+                {
+                    "conversationId": "c-plugin-nonmatch",
+                    "invocationNum": 0,
+                    "lastUserInput": "/mipmem:memory",
+                    "workspacePaths": [str(ws_dir)],
+                },
+                vault_root=vault_dir,
+                config_file=cfg_file,
+            )
+            self.assertNotEqual(non_match.get("terminationBehavior"), "terminate")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ Use MipMem to retrieve past cross-host decisions, sessions, and lossless brainst
 - Treat the startup `L0 Radar` (<= 300 tokens) as a compact index only.
 - When you need prior architectural context or past work, call `mem_recall` or `mem_bs_list` first to inspect `L1` outline cards and `#Lstart-Lend` pointers.
 - Use `mem_bs_slice` with a surgical section (`§k`) or line-range (`#Lstart-Lend`) selector instead of loading entire documents whenever possible.
-- Users can invoke in-chat `/mem` commands (`/mem status`, `/mem recall ...`, `/mem bs view <id> §2`, `/mem handoff`) directly with zero LLM tokens.
+- Users can invoke in-chat `/mem` (or plugin-qualified `/mipmem:mem`) commands (`/mem status`, `/mem recall ...`, `/mem bs view <id> §2`, `/mem handoff`) directly with zero LLM tokens.
 
 ## Opt-In Artifact Saving (User Confirmation Required)
 

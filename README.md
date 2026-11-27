@@ -5,7 +5,7 @@
 
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-26 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-27 -->
 
 **Zero-dependency, zero-LLM-cost 4-layer mipmapped cognitive memory engine with a conflict-free sharded multi-host vault, multi-host Git/folder sync, RCE-safe private sub-apps, opt-in self-update, sub-5ms bilingual SQLite FTS5 recall, Native Antigravity Plugin, and Universal Local stdio MCP server.**
 
@@ -13,7 +13,7 @@ MipMem is built strictly on the **Python >= 3.9 standard library** (`dependencie
 
 ---
 
-## Key Architecture & Safety Guarantees (`v1.1.0`)
+## Key Architecture & Safety Guarantees (`v1.1.2`)
 
 - **Zero External Dependencies & Zero LLM Cost:** Runs anywhere Python `>= 3.9` is installed with zero runtime packages (`dependencies = []`) and zero embedding or LLM API calls.
 - **4-Layer Mipmap Engine (`L0 → L3`):**
@@ -32,7 +32,7 @@ MipMem is built strictly on the **Python >= 3.9 standard library** (`dependencie
   - Strictly opt-in (`mipmem self-update [--check | --dry-run | --version <tag>]`). Enforces HTTPS allowlists to official `pageel/mipmem` GitHub Releases, verifies `SHA256SUMS` (`hmac.compare_digest`), checks `ZipFile.testzip()`, runs pre-swap `health --json` in isolation, atomically swaps via `os.replace()`, and refuses modifying `uv`/`pipx`/`pip`/Plugin/git-dev installs (printing the channel-appropriate upgrade command instead).
 - **Dual CLI/IDE Transcript Adapters & Unified `user_markdown` Hooks (`mipmem.adapters`):**
   - **CLI & IDE Harvesters:** Opens `conversation_summaries.db` read-only (`mode=ro`, skips subagents) and streams `transcript.jsonl` + lazy `transcript_full.jsonl` expansion (never auto-scanning `artifactDirectoryPath`).
-  - **Fail-Open Hooks & `/mem` Intercept:** Runs `SessionStart`, `PreInvocation`, and `Stop` fail-open (`{}` + exit `0`), intercepts `/mem ...` via `metadata.user_markdown` + `terminationBehavior: "terminate"`, and enforces `disabled > passive > active` workspace policies.
+  - **Fail-Open Hooks & `/mem` Intercept:** Runs `SessionStart`, `PreInvocation` (0-indexed `invocationNum == 0` step-1 turn gate), and `Stop` fail-open (`{}` + exit `0`), intercepts `/mem ...` and plugin-qualified `/mipmem:mem ...` aliases via `metadata.user_markdown` + `terminationBehavior: "terminate"`, and enforces `disabled > passive > active` workspace policies.
 - **Universal Local Memory MCP Server (`mipmem mcp`):**
   - Pure stdlib JSON-RPC 2.0 `stdio` server auto-detecting `NDJSON` and `Content-Length` framing (`<= 4 MB`, zero stray stdout logs, `CP-MCP-01`) with 6 canonical tools (`mem_recall`, `mem_bs_list`, `mem_bs_slice`, `mem_bs_save`, `mem_handoff`, `mem_fleet_status`).
 
@@ -101,6 +101,8 @@ Exposed MCP tools: `mem_recall`, `mem_bs_list`, `mem_bs_slice`, `mem_bs_save`, `
 
 ## In-Chat `/mem` Slash Commands (0 LLM Tokens)
 
+Plugin-qualified commands using the `/mipmem:mem ...` alias (for example `/mipmem:mem status`) are routed identically to `/mem ...`:
+
 | Command | Description |
 | :--- | :--- |
 | `/mem help` | Display core `/mem` subcommands and any trusted local `apps.d` delegates |
@@ -119,7 +121,7 @@ Exposed MCP tools: `mem_recall`, `mem_bs_list`, `mem_bs_slice`, `mem_bs_save`, `
 
 ---
 
-## CLI Reference (`v1.1.0`)
+## CLI Reference (`v1.1.2`)
 
 | Command | Purpose |
 | :--- | :--- |
@@ -211,21 +213,21 @@ agy() {
 │   └── workflows/
 │       ├── ci.yml                   # Lint, pyright, clean-room, verify_release, Python 3.9–3.13 + macOS matrix & .pyz determinism
 │       └── release.yml              # Tag-triggered Dual-Channel Release: GitHub Releases (provenance + SHA256SUMS) & PyPI OIDC + PEP 740
-├── plugin.json                      # Native Antigravity Plugin manifest (v1.0.1)
+├── plugin.json                      # Native Antigravity Plugin manifest (v1.1.2)
 ├── hooks.json                       # Flat SessionStart / PreInvocation / Stop hook bindings
 ├── mcp_config.json                  # Local stdio MCP server binding (bin/mipmem.pyz mcp)
 ├── rules/
 │   └── AGENTS.md                    # Concise plain-Markdown plugin rules & opt-in artifact guard
 ├── skills/
 │   └── mem/
-│       └── SKILL.md                 # /mem slash command & 6 MCP tools skill reference
+│       └── SKILL.md                 # /mem & /mipmem:mem slash command & 6 MCP tools skill reference
 ├── config.example.toml              # Clean starter config template
 ├── pyproject.toml                   # Python >= 3.9, dependencies = [], Pageel Contributors metadata
 ├── README.md                        # English-first OSS documentation
 ├── README.vi.md                     # Vietnamese community guide
-├── CHANGELOG.md                     # Keep a Changelog history through v1.0.1
+├── CHANGELOG.md                     # Keep a Changelog history through v1.1.2
 ├── LICENSE                          # MIT License
-├── bin/mipmem.pyz                   # Deterministic single-file zipapp binary (v1.0.1)
+├── bin/mipmem.pyz                   # Deterministic single-file zipapp binary (v1.1.2)
 ├── scripts/
 │   ├── build_pyz.py                 # Deterministic zipapp bundler
 │   ├── check_cleanroom.py           # Tree, archive (.pyz/.zip/.whl/.tar.gz), and --git-history clean-room scanner

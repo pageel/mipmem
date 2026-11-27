@@ -9,7 +9,7 @@ Use this skill when recalling cross-host engineering context, reading or updatin
 
 ## In-Chat `/mem` Slash Commands (0 LLM Tokens)
 
-On Antigravity CLI and IDE, commands prefixed with `/mem` are intercepted by the `PreInvocation` hook and rendered directly as GFM Markdown (`0` LLM tokens consumed):
+On Antigravity CLI and IDE, commands prefixed with `/mem` or `/mipmem:mem` (plugin-qualified alias) are intercepted by the 0-indexed `PreInvocation` hook (`invocationNum == 0`) and rendered directly as GFM Markdown (`0` LLM tokens consumed):
 
 - `/mem help` — Display all supported commands.
 - `/mem status` — Show active vault state, host ID, known hosts, and SQLite FTS5 status.

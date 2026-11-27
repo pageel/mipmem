@@ -1,11 +1,28 @@
 # Changelog
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-26 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-27 -->
 
 All notable changes to `mipmem` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.1.2] - 2026-11-27
+
+### Fixed
+
+- **`BUG-05` 0-Indexed `PreInvocation` Hook Gating (`cli.py`, `adapters/hook_io.py`):**
+  - Updated `_fast_flat_skip()` in `src/mipmem/cli.py` and `handle_pre_invocation()` / `_safe_invocation_num()` in `src/mipmem/adapters/hook_io.py` to treat `invocationNum == 0` as the first model step of each user turn (with missing/malformed values defaulting to `0`) and fast-skip any nonzero `invocationNum` (`!= 0`), preventing follow-up tool loops from re-running L1 recall while fixing step-1 `/` interception and topic-shift recall.
+  - Hardened `_fast_flat_skip()` JSON key detection with a delimiter check (`pos > 0 and compact[pos - 1] in "{,"`) so string values containing `"invocationNum":1` do not trigger false fast-skips without importing `json`, `re`, or `sqlite3`.
+- **`BUG-06` Plugin-Qualified `/mipmem:mem` Prefix Interception (`adapters/hook_io.py`, `adapters/slash_mem.py`, `adapters/agy_ide.py`):**
+  - Consolidated `SLASH_MEM_PREFIXES` (`"/mipmem:mem"`, `"/mem"`) and `is_slash_mem_command()` across hook routing, slash-command stripping, and IDE title extraction so plugin-qualified `/mipmem:mem ...` commands execute cleanly at `0` LLM tokens (`terminationBehavior: "terminate"`, `metadata.user_markdown`) at `invocationNum == 0`.
+- **`CP-HK-01` Hook Diagnostic Telemetry (`adapters/hook_io.py`):**
+  - Added `invocation_num` to `details_extra` on `slash_mem` and `injected_l1` `CP-HK-01` checkpoint logs to match `skipped_fast` observability.
+
+### Added
+
+- **Automated Docs/Changelog Version-Drift Gate (`scripts/verify_release.py`):**
+  - Added `_audit_docs_versions()` to verify `README.md` / `README.vi.md` versioned headings and Repository Layout manifest entries alongside the top `CHANGELOG.md` heading against `pyproject.toml`, while ignoring historical references such as `v1.0.x` and `v2.2`.
 
 ## [1.1.1] - 2026-11-26
 

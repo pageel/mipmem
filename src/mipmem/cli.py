@@ -150,13 +150,14 @@ def _fast_flat_skip(event: str, stripped: bytes) -> bool:
     if event == "pre-invocation":
         marker = '"invocationNum":'
         pos = compact.find(marker)
-        if pos >= 0:
+        if pos > 0 and compact[pos - 1] in "{,":
             rest = compact[pos + len(marker):]
             end = 0
             while end < len(rest) and rest[end] in "-0123456789":
                 end += 1
             tok = rest[:end]
-            if tok and (tok.isdigit() or (tok[0] == "-" and tok[1:].isdigit())) and int(tok) != 1:
+            is_int = bool(tok) and (tok.isdigit() or (tok[0] == "-" and tok[1:].isdigit()))
+            if is_int and int(tok) != 0:
                 if end < len(rest) and rest[end] in ",}":
                     return True
     elif event == "stop":
