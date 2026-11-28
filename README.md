@@ -5,7 +5,7 @@
 
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-27 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-28 -->
 
 **Zero-dependency, zero-LLM-cost 4-layer mipmapped cognitive memory engine with a conflict-free sharded multi-host vault, multi-host Git/folder sync, RCE-safe private sub-apps, opt-in self-update, sub-5ms bilingual SQLite FTS5 recall, Native Antigravity Plugin, and Universal Local stdio MCP server.**
 
@@ -13,7 +13,7 @@ MipMem is built strictly on the **Python >= 3.9 standard library** (`dependencie
 
 ---
 
-## Key Architecture & Safety Guarantees (`v1.1.2`)
+## Key Architecture & Safety Guarantees (`v1.1.3`)
 
 - **Zero External Dependencies & Zero LLM Cost:** Runs anywhere Python `>= 3.9` is installed with zero runtime packages (`dependencies = []`) and zero embedding or LLM API calls.
 - **4-Layer Mipmap Engine (`L0 → L3`):**
@@ -32,7 +32,7 @@ MipMem is built strictly on the **Python >= 3.9 standard library** (`dependencie
   - Strictly opt-in (`mipmem self-update [--check | --dry-run | --version <tag>]`). Enforces HTTPS allowlists to official `pageel/mipmem` GitHub Releases, verifies `SHA256SUMS` (`hmac.compare_digest`), checks `ZipFile.testzip()`, runs pre-swap `health --json` in isolation, atomically swaps via `os.replace()`, and refuses modifying `uv`/`pipx`/`pip`/Plugin/git-dev installs (printing the channel-appropriate upgrade command instead).
 - **Dual CLI/IDE Transcript Adapters & Unified `user_markdown` Hooks (`mipmem.adapters`):**
   - **CLI & IDE Harvesters:** Opens `conversation_summaries.db` read-only (`mode=ro`, skips subagents) and streams `transcript.jsonl` + lazy `transcript_full.jsonl` expansion (never auto-scanning `artifactDirectoryPath`).
-  - **Fail-Open Hooks & `/mem` Intercept:** Runs `SessionStart`, `PreInvocation` (0-indexed `invocationNum == 0` step-1 turn gate), and `Stop` fail-open (`{}` + exit `0`), intercepts `/mem ...` and plugin-qualified `/mipmem:mem ...` aliases via `metadata.user_markdown` + `terminationBehavior: "terminate"`, and enforces `disabled > passive > active` workspace policies.
+  - **Fail-Open Hooks & `/mem` Intercept:** Runs `SessionStart`, `PreInvocation` (0-indexed `invocationNum == 0` step-1 turn gate), and `Stop` fail-open (`{}` + exit `0`), intercepts `/mem ...` and plugin-qualified `/mipmem:mem ...` aliases at `0` LLM tokens via `errorMessage.userMessage` + `terminationBehavior: "terminate"` (with ANSI color styling on CLI, plain Markdown on IDE, and opt-in `MIPMEM_HOOK_USE_USER_MARKDOWN=1`), and enforces `disabled > passive > active` workspace policies.
 - **Universal Local Memory MCP Server (`mipmem mcp`):**
   - Pure stdlib JSON-RPC 2.0 `stdio` server auto-detecting `NDJSON` and `Content-Length` framing (`<= 4 MB`, zero stray stdout logs, `CP-MCP-01`) with 6 canonical tools (`mem_recall`, `mem_bs_list`, `mem_bs_slice`, `mem_bs_save`, `mem_handoff`, `mem_fleet_status`).
 
@@ -103,46 +103,49 @@ Exposed MCP tools: `mem_recall`, `mem_bs_list`, `mem_bs_slice`, `mem_bs_save`, `
 
 Plugin-qualified commands using the `/mipmem:mem ...` alias (for example `/mipmem:mem status`) are routed identically to `/mem ...`:
 
-| Command | Description |
-| :--- | :--- |
-| `/mem help` | Display core `/mem` subcommands and any trusted local `apps.d` delegates |
-| `/mem status` | Show vault status, active host, known hosts, and FTS5 capability |
-| `/mem fleet` | Show multi-host session/brainstorm inventory, Sub-App telemetry, and sync state |
-| `/mem sync [--pull-only \| --push-only]` | Run configured Git or Folder vault synchronization |
-| `/mem recall <query> [--host <h>] [--limit <n>]` | Run EN/VI FTS5 BM25 Bigram recall |
-| `/mem list [start-end]` | List recent sessions (default `1-10`, compact GFM table on CLI) |
-| `/mem bs list [--status <s>] [--host <h>]` | List lossless brainstorm shards with LWW status |
-| `/mem bs save <title> [--file <path>] [--tags a,b]` | Save redacted inline text or a UTF-8 file (`<= 2 MB`, non-symlink) |
-| `/mem bs view <bs_id> [§k \| #Lstart-Lend \| --l1]` | View L1 outline card or surgical L2 section/line slice |
-| `/mem bs status <bs_id> <status>` | Append a conflict-free status event to the active host journal |
-| `/mem config [show \| get <k> \| set <k> <v>]` | View or update typed settings in `config.toml` |
-| `/mem handoff [@<host_id>]` | Display the latest `Primary Work Anchor` handoff for a host |
-| `/mem <app> [args...]` | Execute a trusted local `~/.config/mipmem/apps.d/<app>.json` delegate |
+| Command                                             | Description                                                                     |
+| :-------------------------------------------------- | :------------------------------------------------------------------------------ |
+| `/mem help`                                         | Display core `/mem` subcommands and any trusted local `apps.d` delegates        |
+| `/mem status`                                       | Show vault status, active host, known hosts, and FTS5 capability                |
+| `/mem fleet`                                        | Show multi-host session/brainstorm inventory, Sub-App telemetry, and sync state |
+| `/mem sync [--pull-only \| --push-only]`            | Run configured Git or Folder vault synchronization                              |
+| `/mem recall <query> [--host <h>] [--limit <n>]`    | Run EN/VI FTS5 BM25 Bigram recall                                               |
+| `/mem list [start-end]`                             | List recent sessions (default `1-10`, compact GFM table on CLI)                 |
+| `/mem bs list [--status <s>] [--host <h>]`          | List lossless brainstorm shards with LWW status                                 |
+| `/mem bs save <title> [--file <path>] [--tags a,b]` | Save redacted inline text or a UTF-8 file (`<= 2 MB`, non-symlink)              |
+| `/mem bs view <bs_id> [§k \| #Lstart-Lend \| --l1]` | View L1 outline card or surgical L2 section/line slice                          |
+| `/mem bs status <bs_id> <status>`                   | Append a conflict-free status event to the active host journal                  |
+| `/mem config [show \| get <k> \| set <k> <v>]`      | View or update typed settings in `config.toml`                                  |
+| `/mem handoff [@<host_id>]`                         | Display the latest `Primary Work Anchor` handoff for a host                     |
+| `/mem <app> [args...]`                              | Execute a trusted local `~/.config/mipmem/apps.d/<app>.json` delegate           |
 
 ---
 
-## CLI Reference (`v1.1.2`)
+## CLI Reference (`v1.1.3`)
 
-| Command | Purpose |
-| :--- | :--- |
-| `mipmem init [--host <id>] [--vault <dir>] [--refresh-guide] [--json]` | Initialize `config.toml`, create host-isolated vault directories (`0700`/`0600`), and write/refresh `AGENTS.md` + `README.md` |
-| `mipmem join <vault_remote_url> [--host <id>] [--adopt-host] [--locale en\|vi] [--no-sync-on-stop] [--skip-sync] [--vault <dir>] [--config <path>] [--json]` | Clone private vault (`shell=False`, `core.filemode=false`), guard against `host_id`/dir collisions, configure `config.toml`, rebuild FTS5, and sync |
-| `mipmem config [show \| get <k> \| set <k> <v>] [--json]` | Display, read, or validate & persist typed settings in `config.toml` |
-| `mipmem health [--vault <dir>] [--require-vault] [--deep] [--json]` | Fast `< 25ms` check, or `--deep` FTS5, index, `sync_backend`, `last_sync_status`, and `subapp_delegates_count` probe |
-| `mipmem fleet [--host <id>] [--vault <dir>] [--json]` | Output multi-host inventory, Sub-App telemetry, and cached sync status |
-| `mipmem sync [--pull-only \| --push-only \| --detached \| --if-configured] [--config <path>] [--host <id>] [--vault <dir>] [--json]` | Execute conflict-free Git or Folder vault synchronization (exits `0` no-op with `--if-configured` when unconfigured; accepts custom `--config <path>`) |
-| `mipmem self-update [--check \| --dry-run \| --version <tag>] [--json]` | Check for releases or atomically update a standalone zipapp (`SHA256SUMS` + `testzip()` + pre-swap `health`) |
-| `mipmem migrate --from-v2 <dir> [--vault <dir>] [--host <id>] [--apply] [--force] [--json]` | Preview (`--dry-run` default) or idempotently import a legacy v2 flat memory directory |
-| `mipmem index [--rebuild] [--locale en\|vi] [--vault <dir>] [--json]` | Incrementally sync (or `--rebuild`) `.cache/global_fts.db` from the Sharded Vault |
-| `mipmem recall <query> [--host <id>] [--status <st>] [--limit <N>] [--scope all\|sessions\|brainstorms] [--locale en\|vi] [--json]` | Run sanitized EN/VI FTS5 BM25 Bigram recall and return ranked `L1` memory hits |
-| `mipmem bs [list \| save \| view \| status] [...] [--json]` | Manage lossless brainstorm shards, surgical `L2` slices, and conflict-free status events |
-| `mipmem hook <session-start \| pre-invocation \| stop>` | Run Antigravity lifecycle hooks over `stdin`/`stdout` JSON with sub-25ms no-op skip & fail-open `{}` |
-| `mipmem mcp [--vault <dir>]` | Run the universal local stdio JSON-RPC 2.0 MCP server (`NDJSON` & `Content-Length`) |
+| Command                                                                                                                                                      | Purpose                                                                                                                                                |
+| :----------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mipmem init [--host <id>] [--vault <dir>] [--refresh-guide] [--json]`                                                                                       | Initialize `config.toml`, create host-isolated vault directories (`0700`/`0600`), and write/refresh `AGENTS.md` + `README.md`                          |
+| `mipmem join <vault_remote_url> [--host <id>] [--adopt-host] [--locale en\|vi] [--no-sync-on-stop] [--skip-sync] [--vault <dir>] [--config <path>] [--json]` | Clone private vault (`shell=False`, `core.filemode=false`), guard against `host_id`/dir collisions, configure `config.toml`, rebuild FTS5, and sync    |
+| `mipmem config [show \| get <k> \| set <k> <v>] [--json]`                                                                                                    | Display, read, or validate & persist typed settings in `config.toml`                                                                                   |
+| `mipmem health [--vault <dir>] [--require-vault] [--deep] [--json]`                                                                                          | Fast `< 25ms` check, or `--deep` FTS5, index, `sync_backend`, `last_sync_status`, and `subapp_delegates_count` probe                                   |
+| `mipmem fleet [--host <id>] [--vault <dir>] [--json]`                                                                                                        | Output multi-host inventory, Sub-App telemetry, and cached sync status                                                                                 |
+| `mipmem sync [--pull-only \| --push-only \| --detached \| --if-configured] [--config <path>] [--host <id>] [--vault <dir>] [--json]`                         | Execute conflict-free Git or Folder vault synchronization (exits `0` no-op with `--if-configured` when unconfigured; accepts custom `--config <path>`) |
+| `mipmem self-update [--check \| --dry-run \| --version <tag>] [--json]`                                                                                      | Check for releases or atomically update a standalone zipapp (`SHA256SUMS` + `testzip()` + pre-swap `health`)                                           |
+| `mipmem migrate --from-v2 <dir> [--vault <dir>] [--host <id>] [--apply] [--force] [--json]`                                                                  | Preview (`--dry-run` default) or idempotently import a legacy v2 flat memory directory                                                                 |
+| `mipmem index [--rebuild] [--locale en\|vi] [--vault <dir>] [--json]`                                                                                        | Incrementally sync (or `--rebuild`) `.cache/global_fts.db` from the Sharded Vault                                                                      |
+| `mipmem recall <query> [--host <id>] [--status <st>] [--limit <N>] [--scope all\|sessions\|brainstorms] [--locale en\|vi] [--json]`                          | Run sanitized EN/VI FTS5 BM25 Bigram recall and return ranked `L1` memory hits                                                                         |
+| `mipmem bs [list \| save \| view \| status] [...] [--json]`                                                                                                  | Manage lossless brainstorm shards, surgical `L2` slices, and conflict-free status events                                                               |
+| `mipmem hook <session-start \| pre-invocation \| stop>`                                                                                                      | Run Antigravity lifecycle hooks over `stdin`/`stdout` JSON with sub-25ms no-op skip & fail-open `{}`                                                   |
+| `mipmem mcp [--vault <dir>]`                                                                                                                                 | Run the universal local stdio JSON-RPC 2.0 MCP server (`NDJSON` & `Content-Length`)                                                                    |
 
 Errors on standard CLI commands return a non-zero exit code; when `--json` is passed, errors emit a structured envelope on `stdout`:
 
 ```json
-{"success": false, "error": {"code": "VAULT_NOT_INITIALIZED", "message": "..."}}
+{
+  "success": false,
+  "error": { "code": "VAULT_NOT_INITIALIZED", "message": "..." }
+}
 ```
 
 ---
@@ -198,7 +201,7 @@ agy() {
 
 - **Single-file `.pyz` users:** Replace `mipmem` with `python3 /path/to/mipmem.pyz` (optionally append `--detached` after `--if-configured` for instant `0ms` prompt return).
 - **Cadence modes (`[sync].auto_sync_on_stop` in `config.toml`):**
-  1. `auto_sync_on_stop = true` *(default)*: Auto-syncs after every turn across CLI & IDE, plus guarantees a final `/exit` flush (`sync.lock` prevents overlap).
+  1. `auto_sync_on_stop = true` _(default)_: Auto-syncs after every turn across CLI & IDE, plus guarantees a final `/exit` flush (`sync.lock` prevents overlap).
   2. `auto_sync_on_stop = false`: Zero background pushes during active CLI chat turns, batching changes into one clean sync commit when exiting `agy`.
 - `timeout --signal=INT 20` avoids abrupt `SIGKILL` interruption during Git operations while `GIT_TERMINAL_PROMPT=0` prevents credential prompts from hanging shell exit.
 
@@ -213,7 +216,7 @@ agy() {
 │   └── workflows/
 │       ├── ci.yml                   # Lint, pyright, clean-room, verify_release, Python 3.9–3.13 + macOS matrix & .pyz determinism
 │       └── release.yml              # Tag-triggered Dual-Channel Release: GitHub Releases (provenance + SHA256SUMS) & PyPI OIDC + PEP 740
-├── plugin.json                      # Native Antigravity Plugin manifest (v1.1.2)
+├── plugin.json                      # Native Antigravity Plugin manifest (v1.1.3)
 ├── hooks.json                       # Flat SessionStart / PreInvocation / Stop hook bindings
 ├── mcp_config.json                  # Local stdio MCP server binding (bin/mipmem.pyz mcp)
 ├── rules/
@@ -225,9 +228,9 @@ agy() {
 ├── pyproject.toml                   # Python >= 3.9, dependencies = [], Pageel Contributors metadata
 ├── README.md                        # English-first OSS documentation
 ├── README.vi.md                     # Vietnamese community guide
-├── CHANGELOG.md                     # Keep a Changelog history through v1.1.2
+├── CHANGELOG.md                     # Keep a Changelog history through v1.1.3
 ├── LICENSE                          # MIT License
-├── bin/mipmem.pyz                   # Deterministic single-file zipapp binary (v1.1.2)
+├── bin/mipmem.pyz                   # Deterministic single-file zipapp binary (v1.1.3)
 ├── scripts/
 │   ├── build_pyz.py                 # Deterministic zipapp bundler
 │   ├── check_cleanroom.py           # Tree, archive (.pyz/.zip/.whl/.tar.gz), and --git-history clean-room scanner
