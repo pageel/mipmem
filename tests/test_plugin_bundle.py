@@ -182,6 +182,20 @@ class TestPluginManifestValidatorAndBundle(unittest.TestCase):
             self.assertTrue(any("mcp_config.json" in e for e in bad_combo.errors))
             self.assertTrue(any("frontmatter" in e.lower() for e in bad_combo.errors))
 
+        # 5. More than 3 suggestedPrompts triggers truncation validation error
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            _write_valid_bundle(root)
+            pj = json.loads((root / "plugin.json").read_text(encoding="utf-8"))
+            pj["suggestedPrompts"] = ["/mem status", "/mem help", "/mem bs list", "/mem handoff"]
+            (root / "plugin.json").write_text(json.dumps(pj), encoding="utf-8")
+            too_many = validate_plugin_bundle(root)
+            self.assertFalse(too_many.valid)
+            self.assertTrue(
+                any("suggestedPrompts" in e and "3" in e for e in too_many.errors),
+                msg=str(too_many.errors),
+            )
+
     def test_actual_repo_plugin_bundle_valid_and_zero_global_side_effects(self) -> None:
         from mipmem.adapters.plugin_manifest import validate_plugin_bundle
 

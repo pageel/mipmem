@@ -104,6 +104,19 @@ def _validate_plugin_json(
         errors.append(
             f"plugin.json: version {version!r} does not match expected {expected_version!r}."
         )
+    if "suggestedPrompts" in data:
+        prompts = data.get("suggestedPrompts")
+        if not isinstance(prompts, list) or any(
+            not isinstance(item, str) or not item.strip() for item in prompts
+        ):
+            errors.append(
+                "plugin.json: 'suggestedPrompts' must be a list of non-empty strings."
+            )
+        elif len(prompts) > 3:
+            errors.append(
+                "plugin.json: 'suggestedPrompts' supports at most 3 entries "
+                "(Antigravity truncates > 3)."
+            )
 
 
 def _validate_hooks_json(root: Path, errors: list[str], checked: list[str]) -> None:

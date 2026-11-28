@@ -1,11 +1,22 @@
 # Changelog
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-27 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with src/mipmem/, plugin.json, hooks.json, mcp_config.json, scripts/, .github/workflows/ on 2026-11-28 -->
 
 All notable changes to `mipmem` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.1.3] - 2026-11-28
+
+### Fixed
+
+- **`BUG-07` Antigravity `proto_utils.go:34` `metadata` Panic Workaround & `0`-Token Slash Restore (`adapters/hook_io.py`):**
+  - Updated `render_user_markdown_response()` to emit `{"injectSteps": [{"errorMessage": {"userMessage": ...}}], "terminationBehavior": "terminate"}` by default (avoiding the Antigravity Go runtime `utils.scrubMessage()` panic when inspecting string values inside `systemMessage.metadata`), restoring immediate `0`-LLM-token `/mem` and `/mipmem:mem` command termination on both Antigravity CLI and IDE.
+  - Added `_colorize_for_cli()` to inject ANSI resets and readable semantic colors when `surface == "cli"` (preventing solid red TUI text) while keeping `ide` and `generic` outputs as clean plain Markdown; passed `surface=surface` from `handle_pre_invocation()`.
+  - Preserved opt-in `MIPMEM_HOOK_USE_USER_MARKDOWN=1` (and `use_user_markdown=True`) to restore `systemMessage.metadata.user_markdown` once the upstream runtime fixes `metadata` map scrubbing.
+- **`plugin.json` `suggestedPrompts` Cap (`plugin.json`, `adapters/plugin_manifest.py`):**
+  - Trimmed `suggestedPrompts` in `plugin.json` from `4` to `3` entries (`"/mem status"`, `"/mem bs list"`, `"/mem handoff"`) to eliminate Antigravity `plugins.go:439` truncation warnings, and enforced `<= 3` entries in `validate_plugin_bundle()`.
 
 ## [1.1.2] - 2026-11-27
 

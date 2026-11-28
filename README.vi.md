@@ -5,13 +5,13 @@
 
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with README.md, src/mipmem/, .github/workflows/ on 2026-11-27 -->
+<!-- ⚠️ SOURCE-VERIFIED — Cross-referenced with README.md, src/mipmem/, .github/workflows/ on 2026-11-28 -->
 
 **Hệ thống Bộ nhớ Nhận thức Phân tầng 4 Lớp (`4-Layer Mipmapped Cognitive Memory`) thuần thư viện chuẩn Python `>= 3.9` (`dependencies = []`), `0` phụ thuộc ngoài, `0` chi phí token LLM, hỗ trợ tìm kiếm song ngữ Anh/Việt FTS5 `< 5ms`, đồng bộ đa máy không xung đột và giao thức Sub-App riêng tư từng máy.**
 
 ---
 
-## Điểm nổi bật (`v1.1.2`)
+## Điểm nổi bật (`v1.1.3`)
 
 - **Thuần Python `>= 3.9` Standard Library & `< 25ms` Hot-Path:** Đóng gói gọn trong PyPI package lẫn tệp thực thi đơn `.pyz`; nhánh nóng `health --json` và no-op hook chạy dưới `25ms` với zero import nặng.
 - **Mipmap 4 Tầng (`L0 → L3`) & Brainstorm AST Nguyên bản:**

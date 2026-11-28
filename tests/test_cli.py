@@ -490,10 +490,9 @@ class TestCliDispatcher(unittest.TestCase):
                 )
                 slash_data = json.loads(proc_slash.stdout)
                 self.assertEqual(slash_data["terminationBehavior"], "terminate")
-                self.assertIn(
-                    "host-hook",
-                    slash_data["injectSteps"][0]["systemMessage"]["metadata"]["user_markdown"],
-                )
+                user_msg = slash_data["injectSteps"][0]["errorMessage"]["userMessage"]
+                self.assertIn("host-hook", user_msg)
+                self.assertIn("\033[0m", user_msg)
 
             # Non-key substring inside a string field must NOT trigger false fast-skip
             from mipmem.cli import _fast_flat_skip
