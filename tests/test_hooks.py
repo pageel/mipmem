@@ -26,7 +26,7 @@ from mipmem.core.vault import atomic_write_vault_file, init_vault
 
 
 class TestHookUnifiedRendererAndFailOpen(unittest.TestCase):
-    """Verify unified user_markdown response, 4 MB cap, and fail-open wrapper (S3 §1.4)."""
+    """Verify terminated hook errorMessage response, CLI ANSI styling, and fail-open wrapper."""
 
     def test_render_user_markdown_response_exact_schema_for_cli_and_ide(self) -> None:
         from mipmem.adapters.hook_io import (
@@ -34,23 +34,59 @@ class TestHookUnifiedRendererAndFailOpen(unittest.TestCase):
             render_user_markdown_response,
         )
 
-        rendered = render_user_markdown_response("| Key | Value |\n| --- | --- |\n| ok | 1 |")
+        sample_md = "| Key | Value |\n| --- | --- |\n| ok | 1 |"
+        # Default IDE/generic response uses errorMessage.userMessage (no metadata map panic).
+        rendered = render_user_markdown_response(sample_md)
         self.assertEqual(
             rendered,
             {
                 "injectSteps": [
                     {
-                        "systemMessage": {
-                            "systemMessage": "",
-                            "metadata": {
-                                "user_markdown": "| Key | Value |\n| --- | --- |\n| ok | 1 |",
-                            },
+                        "errorMessage": {
+                            "userMessage": sample_md,
                         }
                     }
                 ],
                 "terminationBehavior": "terminate",
             },
         )
+        ide_msg = rendered["injectSteps"][0]["errorMessage"]["userMessage"]
+        self.assertNotIn("\033[", ide_msg)
+
+        # CLI surface wraps lines with ANSI reset/colors while preserving text content.
+        cli_rendered = render_user_markdown_response(
+            "### Header\n- ✅ ready\n| Key | Value |",
+            surface="cli",
+        )
+        self.assertEqual(cli_rendered.get("terminationBehavior"), "terminate")
+        cli_msg = cli_rendered["injectSteps"][0]["errorMessage"]["userMessage"]
+        self.assertIn("\033[0m", cli_msg)
+        self.assertIn("Header", cli_msg)
+        self.assertIn("Key", cli_msg)
+
+        # Opt-in flag and MIPMEM_HOOK_USE_USER_MARKDOWN=1 restore legacy metadata output.
+        legacy_flag = render_user_markdown_response(sample_md, use_user_markdown=True)
+        self.assertEqual(
+            legacy_flag,
+            {
+                "injectSteps": [
+                    {
+                        "systemMessage": {
+                            "systemMessage": "",
+                            "metadata": {"user_markdown": sample_md},
+                        }
+                    }
+                ],
+                "terminationBehavior": "terminate",
+            },
+        )
+        with mock.patch.dict("os.environ", {"MIPMEM_HOOK_USE_USER_MARKDOWN": "1"}, clear=False):
+            legacy_env = render_user_markdown_response(sample_md)
+        self.assertEqual(
+            legacy_env["injectSteps"][0]["systemMessage"]["metadata"]["user_markdown"],
+            sample_md,
+        )
+
         self.assertEqual(
             render_system_injection("# MipMem L0 Radar\n"),
             {"injectSteps": [{"systemMessage": {"systemMessage": "# MipMem L0 Radar\n"}}]},
@@ -485,9 +521,12 @@ class TestSessionStartAndPreInvocationHooks(unittest.TestCase):
                     logger=logger,
                 )
                 self.assertEqual(res.get("terminationBehavior"), "terminate")
-                step_msg = res["injectSteps"][0]["systemMessage"]
-                self.assertEqual(step_msg["systemMessage"], "")
-                self.assertIn("host-alpha", step_msg["metadata"]["user_markdown"])
+                err_step = res["injectSteps"][0]["errorMessage"]
+                self.assertIn("host-alpha", err_step["userMessage"])
+                if "antigravity-cli" in surface_path:
+                    self.assertIn("\033[0m", err_step["userMessage"])
+                else:
+                    self.assertNotIn("\033[", err_step["userMessage"])
 
             # Missing or malformed invocationNum defaults to 0 (processed on step 0)
             for raw_inv in (None, True, False, "invalid"):
@@ -1294,9 +1333,9 @@ class TestSubAppFleetAndL0HookIntegration(unittest.TestCase):
                     config_file=cfg_file,
                 )
                 self.assertEqual(res.get("terminationBehavior"), "terminate")
-                step_msg = res["injectSteps"][0]["systemMessage"]
-                self.assertEqual(step_msg["systemMessage"], "")
-                self.assertIn("host-alpha", step_msg["metadata"]["user_markdown"])
+                err_step = res["injectSteps"][0]["errorMessage"]
+                self.assertIn("host-alpha", err_step["userMessage"])
+                self.assertNotIn("\033[", err_step["userMessage"])
 
             non_match = handle_pre_invocation(
                 {

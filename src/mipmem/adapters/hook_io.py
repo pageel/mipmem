@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -49,17 +50,76 @@ def _detect_surface(transcript_path: Optional[Any]) -> str:
     return "generic"
 
 
+def _colorize_for_cli(text: str) -> str:
+    """Wrap CLI errorMessage markdown with ANSI reset and colors to avoid solid red TUI text."""
+    if not text:
+        return ""
+    c_reset = "\033[0m"
+    c_white = "\033[0;97m"
+    c_cyan = "\033[1;36m"
+    c_green = "\033[1;32m"
+    c_yellow = "\033[1;33m"
+    c_red = "\033[1;31m"
+    c_dim = "\033[2;37m"
+
+    out_lines: list[str] = []
+    for raw_ln in text.splitlines():
+        stripped = raw_ln.strip()
+        if not stripped:
+            out_lines.append("")
+            continue
+        if "\033[" in raw_ln:
+            out_lines.append(f"{c_reset}{c_white}{raw_ln}{c_reset}")
+            continue
+        if stripped.startswith(("===", "# ", "## ", "### ")):
+            out_lines.append(f"{c_reset}{c_cyan}{raw_ln}{c_reset}")
+        elif stripped.startswith(("✅", "- ✅")):
+            out_lines.append(f"{c_reset}{c_green}{raw_ln}{c_reset}")
+        elif stripped.startswith(("⚠️", "💡", "- ⚠️", "- 💡")):
+            out_lines.append(f"{c_reset}{c_yellow}{raw_ln}{c_reset}")
+        elif stripped.startswith(("❌", "- ❌")):
+            out_lines.append(f"{c_reset}{c_red}{raw_ln}{c_reset}")
+        elif stripped.startswith(("---", "───")):
+            out_lines.append(f"{c_reset}{c_dim}{raw_ln}{c_reset}")
+        else:
+            colored_ln = (
+                f"{c_reset}{c_white}{raw_ln}"
+                .replace("✅", f"{c_green}✅")
+                .replace("⚠️", f"{c_yellow}⚠️")
+                .replace("❌", f"{c_red}❌")
+            )
+            out_lines.append(f"{colored_ln}{c_reset}")
+    return "\n".join(out_lines)
+
+
 # @para-doc [#csa-hook-unified-renderer]
-def render_user_markdown_response(markdown_body: str) -> dict[str, Any]:
-    """Build a 0-LLM-token terminated hook response rendered cleanly on CLI and IDE."""
+def render_user_markdown_response(
+    markdown_body: str,
+    *,
+    surface: str = "generic",
+    use_user_markdown: bool = False,
+) -> dict[str, Any]:
+    """Build a 0-LLM-token terminated hook response using safe errorMessage or opt-in metadata."""
+    if use_user_markdown or os.environ.get("MIPMEM_HOOK_USE_USER_MARKDOWN", "").strip() == "1":
+        return {
+            "injectSteps": [
+                {
+                    "systemMessage": {
+                        "systemMessage": "",
+                        "metadata": {
+                            "user_markdown": markdown_body,
+                        },
+                    }
+                }
+            ],
+            "terminationBehavior": "terminate",
+        }
+    rendered = _colorize_for_cli(markdown_body) if surface == "cli" else markdown_body
     return {
         "injectSteps": [
             {
-                "systemMessage": {
-                    "systemMessage": "",
-                    "metadata": {
-                        "user_markdown": markdown_body,
-                    },
+                "errorMessage": {
+                    "userMessage": rendered,
                 }
             }
         ],
@@ -425,7 +485,7 @@ def handle_pre_invocation(
             duration_ms=(time.perf_counter() - started) * 1000.0,
             details_extra={"invocation_num": invocation_num},
         )
-        return render_user_markdown_response(markdown_body)
+        return render_user_markdown_response(markdown_body, surface=surface)
 
     if policy == "passive" or not user_input:
         _emit_hook_checkpoint(
